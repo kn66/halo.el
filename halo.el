@@ -57,6 +57,16 @@ the default background color."
           (and (integerp value) (< 0 value)))
   :group 'halo)
 
+(defcustom halo-falloff 'smoothstep
+  "Curve used to reduce contrast outside `halo-radius'.
+`linear' changes contrast at a constant rate.  `smoothstep' changes contrast
+more gently near the focus boundary and near the farthest dimmed lines."
+  :type '(choice (const :tag "Linear" linear)
+                 (const :tag "Smoothstep" smoothstep))
+  :safe (lambda (value)
+          (memq value '(linear smoothstep)))
+  :group 'halo)
+
 (defcustom halo-idle-delay 0.06
   "Idle delay in seconds before refreshing halo overlays."
   :type 'number
@@ -77,6 +87,19 @@ This calls `recenter' after point movement instead of relying on Emacs'
 automatic scroll margins."
   :type 'boolean
   :safe #'booleanp
+  :group 'halo)
+
+(defcustom halo-center-fraction 0.5
+  "Vertical window fraction where point should rest when centering is enabled.
+A value of 0.5 means the visual center.  Smaller values place point higher in
+the window, leaving more preview context below point."
+  :type '(restricted-sexp :match-alternatives
+                          ((lambda (value)
+                             (and (numberp value)
+                                  (<= 0.0 value)
+                                  (<= value 1.0)))))
+  :safe (lambda (value)
+          (and (numberp value) (<= 0.0 value) (<= value 1.0)))
   :group 'halo)
 
 (defcustom halo-virtual-top-margin t
@@ -210,14 +233,19 @@ If either color cannot be decoded, return FOREGROUND unchanged."
   "Return foreground alpha for contrast STEP."
   (let* ((steps (max 1 halo-steps))
          (min-alpha (halo--clamp halo-min-alpha 0.0 1.0))
-         (progress (/ (float step) steps)))
+         (linear-progress (/ (float step) steps))
+         (progress (if (eq halo-falloff 'smoothstep)
+                       (* linear-progress linear-progress
+                          (- 3.0 (* 2.0 linear-progress)))
+                     linear-progress)))
     (- 1.0 (* progress (- 1.0 min-alpha)))))
 
 (defun halo--face-cache-key ()
   "Return a key for the current face cache."
   (list (halo--default-background)
         (max 1 halo-steps)
-        (halo--clamp halo-min-alpha 0.0 1.0)))
+        (halo--clamp halo-min-alpha 0.0 1.0)
+        halo-falloff))
 
 (defun halo--dim-face (face step)
   "Return a cached dimming face spec for FACE at contrast STEP."
@@ -297,7 +325,8 @@ buffer.  When WINDOW is non-nil, only delete overlays scoped to WINDOW."
 
 (defun halo--center-line (window)
   "Return the target center line index for WINDOW."
-  (max 0 (/ (1- (max 1 (window-body-height window))) 2)))
+  (round (* (1- (max 1 (window-body-height window)))
+            (halo--clamp halo-center-fraction 0.0 1.0))))
 
 (defun halo--window-table ()
   "Return a weak hash table suitable for window keyed state."
@@ -502,6 +531,8 @@ visited line by line."
         (max 0 halo-radius)
         (max 1 halo-steps)
         (halo--clamp halo-min-alpha 0.0 1.0)
+        halo-falloff
+        (halo--clamp halo-center-fraction 0.0 1.0)
         (halo--default-foreground)
         (halo--default-background)))
 

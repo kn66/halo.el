@@ -55,9 +55,11 @@ M-x halo-global-mode
   (halo-radius 12)
   (halo-min-alpha 0.360)
   (halo-steps 6)
+  (halo-falloff 'smoothstep)
   (halo-idle-delay 0.06)
   (halo-live-update t)
   (halo-center-cursor t)
+  (halo-center-fraction 0.5)
   (halo-virtual-top-margin t)
   (halo-global-excluded-modes '(minibuffer-mode))
   (halo-global-exclude-predicate nil))
@@ -69,11 +71,16 @@ M-x halo-global-mode
   contrast.
 - `halo-min-alpha`: minimum foreground alpha for far-away lines.
 - `halo-steps`: number of contrast levels.
+- `halo-falloff`: contrast curve outside the focus radius.  The default
+  `smoothstep` keeps the edge of the focus area gentler than linear dimming.
 - `halo-idle-delay`: idle delay before overlays are refreshed.
 - `halo-live-update`: when non-nil, update overlays immediately after
   cursor movement.
 - `halo-center-cursor`: when non-nil, call `recenter` after cursor
   movement so point stays near the vertical center of the selected window.
+- `halo-center-fraction`: vertical resting position for point when centering is
+  enabled.  `0.5` is the middle of the window; slightly smaller values leave
+  more preview context below point.
 - `halo-virtual-top-margin`: when non-nil, add display-only space before
   the first buffer line so centering also works at the beginning of the buffer.
 - `halo-global-excluded-modes`: major modes where
@@ -114,6 +121,8 @@ This package intentionally starts as a stable MVP.
 - It only processes the selected window's visible range.
 - Contrast distance is measured in displayed lines, so folded or invisible
   sections do not make nearby visible lines look artificially far away.
+- The default contrast curve is smoothstep rather than linear, so lines just
+  outside the focus radius do not drop abruptly.
 - For folded buffers such as Magit, the visible display lines are scanned once
   per refresh and then reused for distance calculation.
 - It caches dimming face specs and applies them to visible text ranges, keeping
