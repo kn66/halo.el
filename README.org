@@ -7,6 +7,26 @@ reduces the contrast of visible lines farther away from point.
 The goal is close to the spirit of nano-emacs: less visual noise, a calmer
 surface, and a clear focus area without hiding the rest of the buffer.
 
+** Demo
+
+#+caption: nano
+[[file:gif/nano.gif]]
+
+#+caption: nano-dark
+[[file:gif/nano-dark.gif]]
+
+#+caption: doom-one
+[[file:gif/doom-one.gif]]
+
+#+caption: doom-one-light
+[[file:gif/doom-one-light.gif]]
+
+#+caption: modus-operandi
+[[file:gif/modus-operandi.gif]]
+
+#+caption: modus-vivendi
+[[file:gif/modus-vivendi.gif]]
+
 ** Requirements
 
 - Emacs 29.1 or later
