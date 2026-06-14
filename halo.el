@@ -482,6 +482,16 @@ When MAX-LINES is non-nil, stop counting after that many display lines."
         0
       (halo--center-line window))))
 
+(defun halo--center-window-start (window)
+  "Return the `window-start' position that centers point in WINDOW.
+The position is computed by walking display lines, so invisible or folded text
+does not count as visible context above point."
+  (save-excursion
+    (vertical-motion 0 window)
+    (vertical-motion (- (halo--center-line window)) window)
+    (halo--skip-invisible 1)
+    (point)))
+
 (defun halo--virtual-top-margin-lines (window)
   "Return active display-only top margin line count for WINDOW."
   (let ((overlay (halo--virtual-top-margin-overlay window)))
@@ -503,7 +513,8 @@ When MAX-LINES is non-nil, stop counting after that many display lines."
                   (select-window window 'norecord)
                   (if (< 0 (halo--virtual-top-margin-lines window))
                       (set-window-start window (point-min) t)
-                    (recenter (halo--center-recenter-line window))))
+                    (set-window-start
+                     window (halo--center-window-start window) t)))
               (when (window-live-p selected)
                 (select-window selected 'norecord)))))
       (halo--delete-virtual-top-margin window))))
