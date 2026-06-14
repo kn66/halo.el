@@ -15,7 +15,7 @@ surface, and a clear focus area without hiding the rest of the buffer.
 #+caption: nano-dark
 [[file:gif/nano-dark.gif]]
 
-3** Requirements
+** Requirements
 
 - Emacs 29.1 or later
 
@@ -53,6 +53,17 @@ M-x halo-global-mode
 #+end_example
 
 ** use-package
+
+Minimal global setup:
+
+#+begin_src emacs-lisp
+  (use-package halo
+    :load-path "~/.emacs.d/lisp/halo.el"
+    :config
+    (halo-global-mode 1))
+#+end_src
+
+With explicit settings:
 
 #+begin_src emacs-lisp
   (use-package halo
@@ -110,7 +121,7 @@ M-x halo-refresh-all
 For an even wider high-contrast area:
 
 #+begin_src emacs-lisp
-  (setq halo-radius 8)
+  (setq halo-radius 16)
   (setq halo-min-alpha 0.55)
 #+end_src
 
@@ -178,7 +189,7 @@ For prose-heavy buffers, a slightly larger focus radius is often more readable:
 
 ** Future Ideas
 
-- A global companion mode that dims buffers in non-selected windows.
+- A companion mode that dims buffers in non-selected windows.
 - Theme-aware color blending that handles more unusual face combinations.
 - A child-frame mask backend for GUI-only experiments that dim by covering
   distant screen regions instead of changing text foregrounds.
