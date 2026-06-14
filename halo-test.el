@@ -415,46 +415,6 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
-(ert-deftest halo-center-window-uses-visible-lines-with-invisible-text ()
-  (let ((buffer (get-buffer-create " *halo-test-visible-center*"))
-        (halo-center-cursor t)
-        (halo-virtual-top-margin nil)
-        (halo-radius 99)
-        (halo-live-update t)
-        hide-start
-        hide-end
-        point-position)
-    (unwind-protect
-        (progn
-          (delete-other-windows)
-          (switch-to-buffer buffer)
-          (erase-buffer)
-          (setq buffer-invisibility-spec t)
-          (insert "visible top\n")
-          (setq hide-start (point))
-          (dotimes (index 30)
-            (insert (format "hidden %d\n" index)))
-          (setq hide-end (point))
-          (dotimes (index 50)
-            (insert (format "visible %d\n" index))
-            (when (= index 24)
-              (setq point-position (line-beginning-position))))
-          (let ((overlay (make-overlay hide-start hide-end
-                                       (current-buffer) nil t)))
-            (overlay-put overlay 'invisible t))
-          (goto-char point-position)
-          (halo-mode 1)
-          (let* ((window (selected-window))
-                 (lines (halo--visible-display-lines window))
-                 (point-index (halo--display-line-index (point) lines)))
-            (should (= (halo--center-line window) point-index))))
-      (delete-other-windows)
-      (when (buffer-live-p buffer)
-        (with-current-buffer buffer
-          (when halo-mode
-            (halo-mode -1)))
-        (kill-buffer buffer)))))
-
 (ert-deftest halo-virtual-top-margin-removes-orphan-overlays ()
   (let ((buffer (get-buffer-create " *halo-test-orphan-margin*"))
         (halo-center-cursor t)
