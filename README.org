@@ -1,16 +1,15 @@
 * halo.el
 
-=halo= is an experimental Emacs minor mode for quiet editing interfaces.  It
-keeps the current line and nearby lines at normal contrast, then gradually
-reduces the contrast of visible lines farther away from point.
+=halo= is a curiosity-driven hobby package and experimental Emacs minor mode
+for quiet editing interfaces.  It keeps the current line and nearby lines at
+normal contrast, then gradually reduces the contrast of visible lines farther
+away from point.
 
 The goal is to reduce eye movement by keeping the cursor near the vertical
 center, and to make the center easier to attend to by keeping it at higher
 contrast than the surrounding lines.
 
-This may help improve focus, but that is only an informal expectation.  This is
-a hobby package made out of curiosity, not a research project with formal
-definitions or statistical validation.
+This may help improve focus, but that is only an informal expectation.
 
 ** Demo
 
