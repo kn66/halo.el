@@ -59,8 +59,6 @@ M-x halo-global-mode
     (halo-idle-delay 0.06)
     (halo-live-update t)
     (halo-center-cursor t)
-    (halo-center-excluded-modes nil)
-    (halo-after-change-center-excluded-modes nil)
     (halo-center-fraction 0.5)
     (halo-virtual-top-margin t)
     (halo-global-excluded-modes '(minibuffer-mode))
@@ -79,11 +77,6 @@ M-x halo-global-mode
   movement.
 - =halo-center-cursor=: when non-nil, call =recenter= after cursor movement so
   point stays near the vertical center of the selected window.
-- =halo-center-excluded-modes=: major modes where cursor centering is disabled.
-  Contrast overlays still refresh in these buffers.
-- =halo-after-change-center-excluded-modes=: major modes where non-command
-  buffer changes refresh overlays without recentering point.  Add modes here
-  if their own output scrolling should take precedence.
 - =halo-center-fraction=: vertical resting position for point when centering is
   enabled.  =0.5= is the middle of the window; slightly smaller values leave
   more preview context below point.

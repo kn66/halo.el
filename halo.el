@@ -89,22 +89,6 @@ automatic scroll margins."
   :safe #'booleanp
   :group 'halo)
 
-(defcustom halo-center-excluded-modes
-  nil
-  "Major modes where halo should not recenter point.
-Derived modes are also excluded.  This only disables cursor centering; contrast
-overlays are still refreshed when `halo-mode' is enabled."
-  :type '(repeat symbol)
-  :group 'halo)
-
-(defcustom halo-after-change-center-excluded-modes
-  nil
-  "Major modes where non-command buffer changes should not recenter point.
-Derived modes are also excluded.  This avoids fighting modes that manage their
-own output scrolling while still allowing command-driven cursor centering."
-  :type '(repeat symbol)
-  :group 'halo)
-
 (defcustom halo-center-fraction 0.5
   "Vertical window fraction where point should rest when centering is enabled.
 A value of 0.5 means the visual center.  Smaller values place point higher in
@@ -263,32 +247,25 @@ If either color cannot be decoded, return FOREGROUND unchanged."
         (halo--clamp halo-min-alpha 0.0 1.0)
         halo-falloff))
 
-(defun halo--ensure-face-cache ()
-  "Ensure `halo--face-cache' matches the current dimming settings."
+(defun halo--dim-face (face step)
+  "Return a cached dimming face spec for FACE at contrast STEP."
   (let ((key (halo--face-cache-key)))
     (unless (equal key halo--face-cache-key)
       (setq halo--face-cache-key key
-            halo--face-cache (make-hash-table :test #'equal)))))
-
-(defun halo--dim-face (face step &optional background default-foreground)
-  "Return a cached dimming face spec for FACE at contrast STEP."
-  (unless background
-    (halo--ensure-face-cache)
-    (setq background (car halo--face-cache-key)))
-  (let* ((foreground (or (halo--face-foreground face)
-                         default-foreground
-                         (halo--default-foreground)))
-         (cache-key (list face foreground step))
-         (cached (gethash cache-key halo--face-cache)))
-    (or cached
-        (let ((dim-face
-               `(:foreground ,(halo--blend-color
-                                foreground
-                                background
-                                (halo--alpha-for-step step))
-                 :extend t)))
-          (puthash cache-key dim-face halo--face-cache)
-          dim-face))))
+            halo--face-cache (make-hash-table :test #'equal)))
+    (let* ((foreground (or (halo--face-foreground face)
+                           (halo--default-foreground)))
+           (cache-key (list face foreground step))
+           (cached (gethash cache-key halo--face-cache)))
+      (or cached
+          (let ((dim-face
+                 `(:foreground ,(halo--blend-color
+                                  foreground
+                                  (halo--default-background)
+                                  (halo--alpha-for-step step))
+                   :extend t)))
+            (puthash cache-key dim-face halo--face-cache)
+            dim-face)))))
 
 (defun halo--text-face-at (position)
   "Return the text face at POSITION."
@@ -306,15 +283,19 @@ When START and END are non-nil, also remove orphan contrast overlays in that
 range.  Without START and END, remove orphan contrast overlays in the whole
 buffer.  When WINDOW is non-nil, only delete overlays scoped to WINDOW."
   (let ((range-start (or start (point-min)))
-        (range-end (or end (point-max)))
-        kept)
-    (dolist (overlay halo--overlays)
-      (if (and (or (null window)
-                   (eq window (overlay-get overlay 'window)))
-               (overlay-buffer overlay))
-          (delete-overlay overlay)
-        (push overlay kept)))
-    (setq halo--overlays (nreverse kept))
+        (range-end (or end (point-max))))
+    (setq halo--overlays
+          (delq nil
+                (mapcar
+                 (lambda (overlay)
+                   (if (and (or (null window)
+                                (eq window (overlay-get overlay 'window)))
+                            (overlay-buffer overlay))
+                       (progn
+                         (delete-overlay overlay)
+                         nil)
+                     overlay))
+                 halo--overlays)))
     (if window
         (dolist (overlay (overlays-in range-start range-end))
           (when (and (overlay-get overlay 'halo)
@@ -333,34 +314,19 @@ buffer.  When WINDOW is non-nil, only delete overlays scoped to WINDOW."
     (overlay-put overlay 'face face)
     (push overlay halo--overlays)))
 
-(defun halo--make-line-overlays
-    (start end step window &optional background default-foreground)
+(defun halo--make-line-overlays (start end step window)
   "Create dimming overlays from START to END for contrast STEP in WINDOW."
   (let ((position start))
     (while (< position end)
       (let* ((next (halo--next-face-change position end))
              (face (halo--text-face-at position)))
-        (halo--make-overlay
-         position next
-         (halo--dim-face face step background default-foreground)
-         window)
+        (halo--make-overlay position next (halo--dim-face face step) window)
         (setq position next)))))
 
 (defun halo--center-line (window)
   "Return the target center line index for WINDOW."
   (round (* (1- (max 1 (window-body-height window)))
             (halo--clamp halo-center-fraction 0.0 1.0))))
-
-(defun halo--center-cursor-enabled-p ()
-  "Return non-nil when halo should recenter point in the current buffer."
-  (and halo-center-cursor
-       (not (apply #'derived-mode-p halo-center-excluded-modes))))
-
-(defun halo--after-change-center-enabled-p ()
-  "Return non-nil when after-change refreshes should recenter point."
-  (and (halo--center-cursor-enabled-p)
-       (not (apply #'derived-mode-p
-                   halo-after-change-center-excluded-modes))))
 
 (defun halo--window-table ()
   "Return a weak hash table suitable for window keyed state."
@@ -427,35 +393,22 @@ non-nil, is preserved."
                    (eq window (overlay-get overlay 'window))))
       (delete-overlay overlay))))
 
-(defun halo--display-lines-before-point (window &optional max-lines)
-  "Return display lines from `point-min' to point in WINDOW.
-When MAX-LINES is non-nil, stop counting after that many display lines."
+(defun halo--display-lines-before-point (window)
+  "Return display lines from `point-min' to point in WINDOW."
   (let ((display-line-start
          (save-excursion
            (vertical-motion 0 window)
            (point))))
-    (if max-lines
-        (save-excursion
-          (goto-char display-line-start)
-          (min max-lines
-               (abs (vertical-motion (- max-lines) window))))
-      (max 0 (count-screen-lines
-              (point-min) display-line-start nil window)))))
+    (max 0 (count-screen-lines (point-min) display-line-start nil window))))
 
 (defun halo--update-virtual-top-margin (window)
   "Update display-only space before the first buffer line for WINDOW."
-  (if (and (halo--center-cursor-enabled-p)
+  (if (and halo-center-cursor
            halo-virtual-top-margin
            (window-live-p window)
            (eq (window-buffer window) (current-buffer)))
-      (let* ((center-line (halo--center-line window))
-             (previous-margin (halo--virtual-top-margin-lines window))
-             (display-lines-before
-              (max 0
-                   (- (halo--display-lines-before-point
-                       window (+ center-line previous-margin))
-                      previous-margin)))
-             (line-count (max 0 (- center-line display-lines-before)))
+      (let* ((line-count (max 0 (- (halo--center-line window)
+                                   (halo--display-lines-before-point window))))
              (before-string (make-string line-count ?\n))
              (overlay (halo--virtual-top-margin-overlay window)))
         (unless overlay
@@ -491,22 +444,20 @@ When MAX-LINES is non-nil, stop counting after that many display lines."
 
 (defun halo--center-window (window)
   "Recenter WINDOW around point when cursor centering is enabled."
-  (when (and (window-live-p window)
-             (eq (window-buffer window) (current-buffer)))
-    (if (and (halo--center-cursor-enabled-p)
+  (when (and halo-center-cursor
+             (window-live-p window)
+             (eq (window-buffer window) (current-buffer))
              (not (minibufferp (current-buffer))))
-        (progn
-          (halo--update-virtual-top-margin window)
-          (let ((selected (selected-window)))
-            (unwind-protect
-                (progn
-                  (select-window window 'norecord)
-                  (if (< 0 (halo--virtual-top-margin-lines window))
-                      (set-window-start window (point-min) t)
-                    (recenter (halo--center-recenter-line window))))
-              (when (window-live-p selected)
-                (select-window selected 'norecord)))))
-      (halo--delete-virtual-top-margin window))))
+    (halo--update-virtual-top-margin window)
+    (let ((selected (selected-window)))
+      (unwind-protect
+          (progn
+            (select-window window 'norecord)
+            (if (< 0 (halo--virtual-top-margin-lines window))
+                (set-window-start window (point-min) t)
+              (recenter (halo--center-recenter-line window))))
+        (when (window-live-p selected)
+          (select-window selected 'norecord))))))
 
 (defun halo--skip-invisible (direction)
   "Move out of invisible text in DIRECTION when point is invisible."
@@ -524,13 +475,12 @@ Each element is a cons cell (START . END).  The scan advances with
 visited line by line."
   (let ((end (window-end window t))
         (limit (+ (max 1 (window-body-height window)) 2))
-        (count 0)
         lines)
     (save-excursion
       (goto-char (window-start window))
       (halo--skip-invisible 1)
       (while (and (< (point) end)
-                  (< count limit))
+                  (< (length lines) limit))
         (let ((line-start (point))
               line-end)
           (vertical-motion 1 window)
@@ -539,7 +489,6 @@ visited line by line."
                              (min (point) (point-max))
                            (line-beginning-position 2)))
           (push (cons line-start line-end) lines)
-          (setq count (1+ count))
           (if (> line-end line-start)
               (goto-char line-end)
             (goto-char (point-max))))))
@@ -599,12 +548,9 @@ visited line by line."
         (let* ((lines (halo--visible-display-lines window))
                (point-index (halo--display-line-index (point) lines))
                (state (halo--refresh-state window lines point-index))
-               (default-foreground (nth 13 state))
-               (default-background (nth 14 state))
                (index 0))
           (unless (and (not force)
                        (equal state (halo--refresh-state-for-window window)))
-            (halo--ensure-face-cache)
             (halo--set-refresh-state-for-window window state)
             (if lines
                 (halo--delete-overlays
@@ -616,9 +562,7 @@ visited line by line."
                      (distance (abs (- index point-index)))
                      (step (halo--step-for-distance distance)))
                 (when step
-                  (halo--make-line-overlays
-                   line-start line-end step window
-                   default-background default-foreground))
+                  (halo--make-line-overlays line-start line-end step window))
                 (setq index (1+ index))))))))))
 
 (defun halo--schedule (&optional window)
@@ -654,12 +598,9 @@ When WINDOW is non-nil, refresh that window instead of the selected window."
       (when (and halo-mode
                  (eq (window-buffer (selected-window)) buffer))
         (if halo-live-update
-            (halo--update-now
-             (selected-window) t
-             (not (halo--after-change-center-enabled-p)))
+            (halo--update-now (selected-window) t)
           (progn
-            (when (halo--after-change-center-enabled-p)
-              (halo--center-window (selected-window)))
+            (halo--center-window (selected-window))
             (halo--schedule)))))))
 
 (defun halo--pre-command ()
@@ -684,11 +625,10 @@ When WINDOW is non-nil, refresh that window instead of the selected window."
       (when halo-mode
         (halo--schedule window)))))
 
-(defun halo--update-now (window &optional force skip-center)
+(defun halo--update-now (window &optional force)
   "Update centering and contrast overlays immediately for WINDOW."
   (halo--cancel-timer)
-  (unless skip-center
-    (halo--center-window window))
+  (halo--center-window window)
   (halo--refresh (current-buffer) window force))
 
 (defun halo--cancel-timer ()
