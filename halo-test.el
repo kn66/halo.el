@@ -373,6 +373,75 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
+(ert-deftest halo-visible-display-lines-skip-invisible-folds ()
+  (let ((buffer (get-buffer-create " *halo-test-invisible-folds*"))
+        (halo-center-cursor nil)
+        (halo-virtual-top-margin nil)
+        (inhibit-modification-hooks t))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (insert "visible 1\nfolded 1\nfolded 2\nvisible 2\nvisible 3\n")
+          (let ((fold (make-overlay (save-excursion
+                                      (goto-char (point-min))
+                                      (forward-line 1)
+                                      (point))
+                                    (save-excursion
+                                      (goto-char (point-min))
+                                      (forward-line 3)
+                                      (point))
+                                    buffer)))
+            (overlay-put fold 'invisible t)
+            (goto-char (point-min))
+            (halo-mode 1)
+            (let ((visible-text
+                   (mapcar
+                    (lambda (range)
+                      (buffer-substring-no-properties
+                       (car range)
+                       (min (cdr range)
+                            (save-excursion
+                              (goto-char (car range))
+                              (line-end-position)))))
+                    (halo--visible-display-lines (selected-window)))))
+              (should (member "visible 1" visible-text))
+              (should (member "visible 2" visible-text))
+              (should-not (member "folded 1" visible-text))
+              (should-not (member "folded 2" visible-text)))))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-after-change-update-centers-process-output-like-buffers ()
+  (let ((buffer (get-buffer-create " *halo-test-process-output*"))
+        (halo-center-cursor t)
+        (halo-virtual-top-margin t)
+        (halo-radius 99)
+        (halo-live-update t))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (halo-mode 1)
+          (insert "process output\n")
+          (goto-char (point-max))
+          (halo--after-change-update buffer)
+          (should halo--virtual-top-margin-overlay)
+          (should (< 0 (halo--virtual-top-margin-lines (selected-window))))
+          (should (= (point-min) (window-start (selected-window)))))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
 (ert-deftest halo-refresh-force-rebuilds-overlays ()
   (let ((buffer (get-buffer-create " *halo-test-refresh-api*"))
         (halo-radius 0)

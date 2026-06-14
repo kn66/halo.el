@@ -393,13 +393,29 @@ non-nil, is preserved."
                    (eq window (overlay-get overlay 'window))))
       (delete-overlay overlay))))
 
-(defun halo--display-lines-before-point (window)
-  "Return display lines from `point-min' to point in WINDOW."
+(defun halo--display-lines-before-point (window &optional limit)
+  "Return display lines from `point-min' to point in WINDOW.
+When LIMIT is non-nil, stop counting after that many display lines."
   (let ((display-line-start
          (save-excursion
            (vertical-motion 0 window)
            (point))))
-    (max 0 (count-screen-lines (point-min) display-line-start nil window))))
+    (if (null limit)
+        (max 0 (count-screen-lines (point-min) display-line-start nil window))
+      (let ((max-lines (max 0 limit))
+            (count 0))
+        (save-excursion
+          (goto-char (point-min))
+          (halo--skip-invisible 1)
+          (while (and (< (point) display-line-start)
+                      (< count max-lines))
+            (let ((before (point)))
+              (vertical-motion 1 window)
+              (halo--skip-invisible 1)
+              (if (> (point) before)
+                  (setq count (1+ count))
+                (goto-char display-line-start)))))
+        count))))
 
 (defun halo--update-virtual-top-margin (window)
   "Update display-only space before the first buffer line for WINDOW."
@@ -407,8 +423,10 @@ non-nil, is preserved."
            halo-virtual-top-margin
            (window-live-p window)
            (eq (window-buffer window) (current-buffer)))
-      (let* ((line-count (max 0 (- (halo--center-line window)
-                                   (halo--display-lines-before-point window))))
+      (let* ((center-line (halo--center-line window))
+             (line-count (max 0 (- center-line
+                                   (halo--display-lines-before-point
+                                    window center-line))))
              (before-string (make-string line-count ?\n))
              (overlay (halo--virtual-top-margin-overlay window)))
         (unless overlay
@@ -475,12 +493,13 @@ Each element is a cons cell (START . END).  The scan advances with
 visited line by line."
   (let ((end (window-end window t))
         (limit (+ (max 1 (window-body-height window)) 2))
+        (count 0)
         lines)
     (save-excursion
       (goto-char (window-start window))
       (halo--skip-invisible 1)
       (while (and (< (point) end)
-                  (< (length lines) limit))
+                  (< count limit))
         (let ((line-start (point))
               line-end)
           (vertical-motion 1 window)
@@ -489,6 +508,7 @@ visited line by line."
                              (min (point) (point-max))
                            (line-beginning-position 2)))
           (push (cons line-start line-end) lines)
+          (setq count (1+ count))
           (if (> line-end line-start)
               (goto-char line-end)
             (goto-char (point-max))))))
