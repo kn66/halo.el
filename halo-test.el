@@ -72,6 +72,85 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest halo-center-cursor-includes-eshell-by-default ()
+  (let ((buffer (get-buffer-create " *halo-test-center-excluded*"))
+        (halo-center-cursor t))
+    (unwind-protect
+        (with-current-buffer buffer
+          (fundamental-mode)
+          (should (halo--center-cursor-enabled-p))
+          (setq major-mode 'shell-mode)
+          (should (halo--center-cursor-enabled-p))
+          (setq major-mode 'eshell-mode)
+          (should (halo--center-cursor-enabled-p)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-after-change-center-includes-eshell-by-default ()
+  (let ((buffer (get-buffer-create " *halo-test-after-change-center-excluded*"))
+        (halo-center-cursor t))
+    (unwind-protect
+        (with-current-buffer buffer
+          (fundamental-mode)
+          (should (halo--after-change-center-enabled-p))
+          (setq major-mode 'eshell-mode)
+          (should (halo--after-change-center-enabled-p)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-after-change-center-can-exclude-eshell ()
+  (let ((buffer (get-buffer-create " *halo-test-after-change-center-excluded*"))
+        (halo-center-cursor t)
+        (halo-after-change-center-excluded-modes '(eshell-mode)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (fundamental-mode)
+          (should (halo--after-change-center-enabled-p))
+          (setq major-mode 'eshell-mode)
+          (should-not (halo--after-change-center-enabled-p)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-center-window-removes-margin-in-excluded-modes ()
+  (let ((buffer (get-buffer-create " *halo-test-center-excluded-margin*"))
+        (halo-center-cursor t)
+        (halo-center-excluded-modes '(eshell-mode))
+        (halo-virtual-top-margin t))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (setq major-mode 'eshell-mode)
+          (let ((overlay (make-overlay (point-min) (point-min)
+                                       (current-buffer) nil nil)))
+            (overlay-put overlay 'halo-virtual-top-margin t)
+            (halo--set-virtual-top-margin-overlay (selected-window) overlay))
+          (halo--center-window (selected-window))
+          (should-not (halo--virtual-top-margin-overlay (selected-window))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-display-lines-before-point-can-be-capped ()
+  (let ((buffer (get-buffer-create " *halo-test-display-lines-cap*")))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 80)
+            (insert (format "line %d\n" index)))
+          (goto-char (point-min))
+          (forward-line 40)
+          (should (= 40 (halo--display-lines-before-point
+                         (selected-window))))
+          (should (= 5 (halo--display-lines-before-point
+                        (selected-window) 5)))
+          (goto-char (point-min))
+          (forward-line 3)
+          (should (= 3 (halo--display-lines-before-point
+                        (selected-window) 5))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest halo-refresh-skips-unchanged-state ()
   (let ((buffer (get-buffer-create " *halo-test-refresh*"))
         (halo-radius 0)
@@ -280,6 +359,32 @@
           (should (= 0 (halo--center-recenter-line (selected-window))))
           (should (string-match-p "\n" (overlay-get halo--virtual-top-margin-overlay
                                                     'before-string))))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-virtual-top-margin-ignores-existing-margin-when-recomputing ()
+  (let ((buffer (get-buffer-create " *halo-test-stable-short-margin*"))
+        (halo-center-cursor t)
+        (halo-virtual-top-margin t)
+        (halo-radius 99)
+        (halo-live-update t))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (insert "prompt")
+          (goto-char (point-max))
+          (halo-mode 1)
+          (let ((initial-lines
+                 (halo--virtual-top-margin-lines (selected-window))))
+            (should (< 0 initial-lines))
+            (halo-refresh t)
+            (should (= initial-lines
+                       (halo--virtual-top-margin-lines (selected-window))))))
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (when halo-mode
