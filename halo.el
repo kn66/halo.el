@@ -157,6 +157,15 @@ When the predicate returns non-nil, `halo-mode' is not enabled in that buffer."
 (defvar-local halo--refresh-states nil
   "Hash table of overlay refresh states keyed by window.")
 
+(defconst halo--mouse-wheel-commands
+  '(mwheel-scroll
+    pixel-scroll-precision
+    pixel-scroll-interpolate-down
+    pixel-scroll-interpolate-up
+    pixel-scroll-up
+    pixel-scroll-down)
+  "Commands that scroll the window through mouse wheel input.")
+
 (defvar halo-mode)
 
 (defun halo--clamp (value min-value max-value)
@@ -260,10 +269,10 @@ If either color cannot be decoded, return FOREGROUND unchanged."
       (or cached
           (let ((dim-face
                  `(:foreground ,(halo--blend-color
-                                  foreground
-                                  (halo--default-background)
-                                  (halo--alpha-for-step step))
-                   :extend t)))
+                                 foreground
+                                 (halo--default-background)
+                                 (halo--alpha-for-step step))
+                               :extend t)))
             (puthash cache-key dim-face halo--face-cache)
             dim-face)))))
 
@@ -359,6 +368,21 @@ buffer.  When WINDOW is non-nil, only delete overlays scoped to WINDOW."
   "Set display-only top margin OVERLAY for WINDOW."
   (setq halo--virtual-top-margin-overlay overlay)
   (puthash window overlay (halo--virtual-top-margin-overlays)))
+
+(defun halo--mouse-wheel-command-p ()
+  "Return non-nil when the current command came from mouse wheel scrolling."
+  (memq this-command halo--mouse-wheel-commands))
+
+(defun halo--move-point-to-window-center (window)
+  "Move point to the display line nearest WINDOW's configured center."
+  (when (and (window-live-p window)
+             (eq (window-buffer window) (current-buffer)))
+    (let* ((lines (halo--visible-display-lines window))
+           (index (min (max 0 (1- (length lines)))
+                       (halo--center-line window)))
+           (range (nth index lines)))
+      (when range
+        (goto-char (car range))))))
 
 (defun halo--delete-virtual-top-margin (&optional window)
   "Delete display-only top margin overlays.
@@ -631,11 +655,20 @@ When WINDOW is non-nil, refresh that window instead of the selected window."
   "Refresh overlays after commands when the selected window shows this buffer."
   (unwind-protect
       (when (eq (window-buffer (selected-window)) (current-buffer))
-        (if halo-live-update
-            (halo--update-now (selected-window))
-          (progn
-            (halo--center-window (selected-window))
-            (halo--schedule))))
+        (let ((window (selected-window)))
+          (if (halo--mouse-wheel-command-p)
+              (progn
+                (halo--move-point-to-window-center window)
+                (if halo-live-update
+                    (halo--update-now window)
+                  (progn
+                    (halo--center-window window)
+                    (halo--schedule window))))
+            (if halo-live-update
+                (halo--update-now window)
+              (progn
+                (halo--center-window window)
+                (halo--schedule window))))))
     (setq halo--in-command nil)))
 
 (defun halo--window-scroll (window _display-start)

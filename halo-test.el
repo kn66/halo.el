@@ -442,6 +442,77 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
+(ert-deftest halo-mouse-wheel-scroll-keeps-point-centered ()
+  (let ((buffer (get-buffer-create " *halo-test-mouse-wheel*"))
+        (halo-center-cursor t)
+        (halo-virtual-top-margin t)
+        (halo-radius 0)
+        (halo-live-update t))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 80)
+            (insert (format "line %d\n" index)))
+          (goto-char (point-min))
+          (halo-mode 1)
+          (let ((wheel-start (save-excursion
+                               (goto-char (point-min))
+                               (forward-line 10)
+                               (point))))
+            (set-window-start (selected-window) wheel-start t)
+            (let ((expected-point
+                   (save-excursion
+                     (goto-char wheel-start)
+                     (forward-line (halo--center-line (selected-window)))
+                     (point))))
+              (let ((this-command 'mwheel-scroll))
+                (halo--post-command))
+              (should (= expected-point (point))))
+            (should (= wheel-start (window-start (selected-window))))
+            (should halo--overlays)))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-mouse-wheel-text-scale-does-not-move-point ()
+  (let ((buffer (get-buffer-create " *halo-test-mouse-wheel-text-scale*"))
+        (halo-center-cursor nil)
+        (halo-radius 0)
+        (halo-live-update t))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 80)
+            (insert (format "line %d\n" index)))
+          (goto-char (point-min))
+          (halo-mode 1)
+          (let ((wheel-start (save-excursion
+                               (goto-char (point-min))
+                               (forward-line 10)
+                               (point)))
+                (point-start (save-excursion
+                               (goto-char (point-min))
+                               (forward-line 30)
+                               (point))))
+            (set-window-start (selected-window) wheel-start t)
+            (goto-char point-start)
+            (let ((this-command 'mouse-wheel-text-scale))
+              (halo--post-command))
+            (should (= point-start (point)))))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
 (ert-deftest halo-refresh-force-rebuilds-overlays ()
   (let ((buffer (get-buffer-create " *halo-test-refresh-api*"))
         (halo-radius 0)
