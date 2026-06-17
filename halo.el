@@ -297,13 +297,15 @@ buffer.  When WINDOW is non-nil, only delete overlays scoped to WINDOW."
           (delq nil
                 (mapcar
                  (lambda (overlay)
-                   (if (and (or (null window)
-                                (eq window (overlay-get overlay 'window)))
-                            (overlay-buffer overlay))
-                       (progn
-                         (delete-overlay overlay)
-                         nil)
-                     overlay))
+                   (cond
+                    ((not (overlay-buffer overlay))
+                     nil)
+                    ((or (null window)
+                         (eq window (overlay-get overlay 'window)))
+                     (delete-overlay overlay)
+                     nil)
+                    (t
+                     overlay)))
                  halo--overlays)))
     (if window
         (dolist (overlay (overlays-in range-start range-end))
@@ -580,6 +582,14 @@ visited line by line."
         (halo--default-foreground)
         (halo--default-background)))
 
+(defun halo--point-centered-p (window point-index)
+  "Return non-nil when point is visually at WINDOW's configured center.
+When virtual top margin is active, include its display-only lines because they
+shift point downward without changing its visible buffer line index."
+  (or (not halo-center-cursor)
+      (= (halo--center-line window)
+         (+ point-index (halo--virtual-top-margin-lines window)))))
+
 (defun halo--refresh (buffer window &optional force)
   "Refresh halo overlays for BUFFER in WINDOW."
   (when (and (buffer-live-p buffer)
@@ -600,14 +610,15 @@ visited line by line."
                 (halo--delete-overlays
                  (caar lines) (cdar (last lines)) window)
               (halo--delete-overlays nil nil window))
-            (dolist (range lines)
-              (let* ((line-start (car range))
-                     (line-end (cdr range))
-                     (distance (abs (- index point-index)))
-                     (step (halo--step-for-distance distance)))
-                (when step
-                  (halo--make-line-overlays line-start line-end step window))
-                (setq index (1+ index))))))))))
+            (when (halo--point-centered-p window point-index)
+              (dolist (range lines)
+                (let* ((line-start (car range))
+                       (line-end (cdr range))
+                       (distance (abs (- index point-index)))
+                       (step (halo--step-for-distance distance)))
+                  (when step
+                    (halo--make-line-overlays line-start line-end step window))
+                  (setq index (1+ index)))))))))))
 
 (defun halo--schedule (&optional window)
   "Schedule a delayed halo refresh for the current buffer.

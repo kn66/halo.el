@@ -215,6 +215,62 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
+(ert-deftest halo-refresh-skips-dimming-when-point-is-not-centered ()
+  (let ((buffer (get-buffer-create " *halo-test-noncentered*"))
+        (halo-radius 0)
+        (halo-steps 2)
+        (halo-min-alpha 0.5)
+        (halo-center-cursor t)
+        (halo-virtual-top-margin nil)
+        (halo-live-update t))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 80)
+            (insert (format "line %d\n" index)))
+          (goto-char (point-min))
+          (forward-line 40)
+          (halo-mode 1)
+          (should halo--overlays)
+          (goto-char (point-min))
+          (set-window-start (selected-window) (point-min) t)
+          (halo-refresh t)
+          (should-not halo--overlays))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-refresh-treats-virtual-top-margin-as-centered ()
+  (let ((buffer (get-buffer-create " *halo-test-margin-centered*"))
+        (halo-radius 0)
+        (halo-steps 2)
+        (halo-min-alpha 0.5)
+        (halo-center-cursor t)
+        (halo-virtual-top-margin t)
+        (halo-live-update t))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 80)
+            (insert (format "line %d\n" index)))
+          (goto-char (point-min))
+          (halo-mode 1)
+          (should (< 0 (halo--virtual-top-margin-lines (selected-window))))
+          (should halo--overlays))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
 (ert-deftest halo-virtual-top-margin-is-window-local ()
   (let ((buffer (get-buffer-create " *halo-test-virtual-margin*"))
         (halo-center-cursor t)
