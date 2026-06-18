@@ -342,6 +342,103 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
+(ert-deftest halo-virtual-boundary-markers-use-fringe-tildes ()
+  (let* ((halo-virtual-boundary-markers t)
+         (line (halo--virtual-boundary-line)))
+    (should (equal (face-attribute 'halo-virtual-boundary-marker :inherit)
+                   'default))
+    (should (equal halo--virtual-boundary-marker-bitmap-array
+                   [#b00000000
+                    #b00000000
+                    #b00000000
+                    #b01110001
+                    #b11011011
+                    #b10001110
+                    #b00000000
+                    #b00000000]))
+    (should (get-text-property 0 'display line))
+    (should (equal (get-text-property 0 'display line)
+                   '(left-fringe halo--virtual-boundary-marker
+                                 halo-virtual-boundary-marker)))))
+
+(ert-deftest halo-virtual-boundary-markers-are-off-by-default ()
+  (let ((halo-virtual-boundary-markers nil))
+    (should-not (get-text-property 0 'display
+                                   (halo--virtual-boundary-line)))))
+
+(ert-deftest halo-empty-line-indicators-use-fringe-tildes ()
+  (let ((buffer (get-buffer-create " *halo-test-bottom-margin*"))
+        (halo-center-cursor t)
+        (halo-virtual-top-margin t)
+        (halo-virtual-boundary-markers t)
+        (halo-radius 99)
+        (halo-live-update t))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (insert "first\nsecond\nthird")
+          (goto-char (point-max))
+          (halo-mode 1)
+          (should indicate-empty-lines)
+          (should (equal (alist-get 'empty-line fringe-indicator-alist)
+                         'halo--virtual-boundary-marker)))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-empty-line-indicators-are-off-by-default ()
+  (let ((buffer (get-buffer-create " *halo-test-bottom-off*"))
+        (halo-center-cursor t)
+        (halo-virtual-top-margin t)
+        (halo-virtual-boundary-markers nil)
+        (halo-live-update t))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (halo-mode 1)
+          (should-not indicate-empty-lines))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-empty-line-indicators-restore-previous-state ()
+  (let ((buffer (get-buffer-create " *halo-test-empty-line-restore*"))
+        (halo-center-cursor t)
+        (halo-virtual-top-margin t)
+        (halo-virtual-boundary-markers t)
+        (halo-live-update t)
+        (original-fringe '((empty-line . empty-line))))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (setq-local indicate-empty-lines nil)
+          (setq-local fringe-indicator-alist original-fringe)
+          (halo-mode 1)
+          (should indicate-empty-lines)
+          (should (equal (alist-get 'empty-line fringe-indicator-alist)
+                         'halo--virtual-boundary-marker))
+          (halo-mode -1)
+          (should-not indicate-empty-lines)
+          (should (equal fringe-indicator-alist original-fringe)))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
 (ert-deftest halo-center-recenter-line-uses-center-without-virtual-margin ()
   (let ((buffer (get-buffer-create " *halo-test-recenter-line*"))
         (halo-center-cursor t)
@@ -422,6 +519,86 @@
           (halo-refresh t)
           (should (< 0 (halo--virtual-top-margin-lines (selected-window))))
           (should (= (point-min) (window-start (selected-window)))))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-image-display-suspends-centering-only ()
+  (let ((buffer (get-buffer-create " *halo-test-image-display*"))
+        (halo-center-cursor t)
+        (halo-center-cursor-display-fallback t)
+        (halo-virtual-top-margin t)
+        (halo-radius 0)
+        (halo-live-update t)
+        before-position
+        image-position)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (insert "far\n")
+          (setq before-position (point))
+          (insert "before\n")
+          (setq image-position (point))
+          (insert (propertize
+                   "i"
+                   'display
+                   '(image :type pbm :data "P1\n1 1\n0\n")))
+          (insert "\nafter\n")
+          (goto-char (point-min))
+          (halo-mode 1)
+          (should (halo--center-cursor-active-p (selected-window)))
+          (goto-char before-position)
+          (halo-refresh t)
+          (should (halo--nearby-display-line-has-image-display-p
+                   (selected-window)))
+          (should-not (halo--center-cursor-active-p (selected-window)))
+          (goto-char image-position)
+          (halo-refresh t)
+          (should (halo--nearby-display-line-has-image-display-p
+                   (selected-window)))
+          (should-not (halo--center-cursor-active-p (selected-window)))
+          (should-not (halo--virtual-top-margin-overlay (selected-window)))
+          (should halo--overlays))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-image-display-fallback-removes-existing-virtual-margin ()
+  (let ((buffer (get-buffer-create " *halo-test-image-display-margin*"))
+        (halo-center-cursor t)
+        (halo-center-cursor-display-fallback t)
+        (halo-virtual-top-margin t)
+        (halo-radius 99)
+        (halo-live-update t)
+        before-image-position)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (insert "first\nsecond\nthird\n")
+          (goto-char (point-min))
+          (halo-mode 1)
+          (should (halo--virtual-top-margin-overlay (selected-window)))
+          (goto-char (point-max))
+          (insert "before image\n")
+          (setq before-image-position (line-beginning-position 0))
+          (insert (propertize
+                   "i"
+                   'display
+                   '(image :type pbm :data "P1\n1 1\n0\n")))
+          (goto-char before-image-position)
+          (set-window-start (selected-window) (point-min) t)
+          (halo-refresh t)
+          (should-not (halo--virtual-top-margin-overlay (selected-window))))
       (delete-other-windows)
       (when (buffer-live-p buffer)
         (with-current-buffer buffer

@@ -89,6 +89,17 @@ automatic scroll margins."
   :safe #'booleanp
   :group 'halo)
 
+(defcustom halo-center-cursor-display-fallback t
+  "When non-nil, suspend cursor centering near image display lines.
+Large display properties, such as images in EWW buffers, can occupy many
+screen lines while still representing only one buffer position.  In that case
+keeping point centered can prevent natural movement through the displayed
+content, so halo falls back to normal window scrolling while point is on or
+next to that display line and keeps dimming active."
+  :type 'boolean
+  :safe #'booleanp
+  :group 'halo)
+
 (defcustom halo-center-fraction 0.5
   "Vertical window fraction where point should rest when centering is enabled.
 A value of 0.5 means the visual center.  Smaller values place point higher in
@@ -106,6 +117,14 @@ the window, leaving more preview context below point."
   "When non-nil, add display-only space before the first buffer line.
 This lets `halo-center-cursor' keep point near the vertical center even at
 the beginning of the buffer."
+  :type 'boolean
+  :safe #'booleanp
+  :group 'halo)
+
+(defcustom halo-virtual-boundary-markers nil
+  "When non-nil, mark virtual buffer edges with fringe tildes.
+The markers are shown in display-only virtual lines before `point-min' and
+after `point-max', similar to vi-style empty-line tildes."
   :type 'boolean
   :safe #'booleanp
   :group 'halo)
@@ -157,6 +176,9 @@ When the predicate returns non-nil, `halo-mode' is not enabled in that buffer."
 (defvar-local halo--refresh-states nil
   "Hash table of overlay refresh states keyed by window.")
 
+(defvar-local halo--empty-line-indicator-state nil
+  "Previous empty-line fringe indicator state for this buffer.")
+
 (defconst halo--mouse-wheel-commands
   '(mwheel-scroll
     pixel-scroll-precision
@@ -167,6 +189,26 @@ When the predicate returns non-nil, `halo-mode' is not enabled in that buffer."
   "Commands that scroll the window through mouse wheel input.")
 
 (defvar halo-mode)
+
+(defconst halo--virtual-boundary-marker-bitmap-array
+  [#b00000000
+   #b00000000
+   #b00000000
+   #b01110001
+   #b11011011
+   #b10001110
+   #b00000000
+   #b00000000]
+  "Bitmap array used for virtual buffer-edge fringe markers.")
+
+(defface halo-virtual-boundary-marker
+  '((t :inherit default))
+  "Face used for virtual buffer-edge fringe markers."
+  :group 'halo)
+
+(define-fringe-bitmap 'halo--virtual-boundary-marker
+  halo--virtual-boundary-marker-bitmap-array
+  nil nil 'center)
 
 (defun halo--clamp (value min-value max-value)
   "Clamp VALUE between MIN-VALUE and MAX-VALUE."
@@ -375,6 +417,75 @@ buffer.  When WINDOW is non-nil, only delete overlays scoped to WINDOW."
   "Return non-nil when the current command came from mouse wheel scrolling."
   (memq this-command halo--mouse-wheel-commands))
 
+(defun halo--image-display-spec-p (display)
+  "Return non-nil when DISPLAY contains an image display specification."
+  (cond
+   ((and (consp display)
+         (eq (car display) 'image))
+    t)
+   ((consp display)
+    (catch 'image
+      (dolist (entry display)
+        (when (halo--image-display-spec-p entry)
+          (throw 'image t)))
+      nil))
+   (t
+    nil)))
+
+(defun halo--display-line-has-image-display-p (start end)
+  "Return non-nil when text between START and END has an image display."
+  (let ((position start)
+        found)
+    (when (<= end start)
+      (setq end (min (point-max) (1+ start))))
+    (while (and (< position end)
+                (not found))
+      (setq found
+            (halo--image-display-spec-p
+             (get-char-property position 'display)))
+      (setq position
+            (let ((next (next-single-char-property-change
+                         position 'display nil end)))
+              (if (> next position)
+                  next
+                (1+ position)))))
+    found))
+
+(defun halo--nearby-display-line-has-image-display-p (window)
+  "Return non-nil when point's display line or a neighbor has an image."
+  (let* ((current-start (save-excursion
+                          (vertical-motion 0 window)
+                          (point)))
+         (current-end (save-excursion
+                        (vertical-motion 1 window)
+                        (point)))
+         (previous-start (save-excursion
+                           (goto-char current-start)
+                           (vertical-motion -1 window)
+                           (point)))
+         (next-end (save-excursion
+                     (goto-char current-end)
+                     (vertical-motion 1 window)
+                     (point))))
+    (when (<= current-end current-start)
+      (setq current-end (min (point-max) (1+ current-start))))
+    (when (<= next-end current-end)
+      (setq next-end (min (point-max) (1+ current-end))))
+    (or (and (< previous-start current-start)
+             (halo--display-line-has-image-display-p previous-start
+                                                     current-start))
+        (halo--display-line-has-image-display-p current-start current-end)
+        (and (< current-end next-end)
+             (halo--display-line-has-image-display-p current-end next-end)))))
+
+(defun halo--center-cursor-active-p (window)
+  "Return non-nil when cursor centering should be active in WINDOW."
+  (and halo-center-cursor
+       (window-live-p window)
+       (eq (window-buffer window) (current-buffer))
+       (not (and halo-center-cursor-display-fallback
+                 (halo--nearby-display-line-has-image-display-p window)))))
+
 (defun halo--move-point-to-window-center (window)
   "Move point to the display line nearest WINDOW's configured center."
   (when (and (window-live-p window)
@@ -419,6 +530,52 @@ non-nil, is preserved."
                    (eq window (overlay-get overlay 'window))))
       (delete-overlay overlay))))
 
+(defun halo--virtual-boundary-line ()
+  "Return one display-only virtual boundary marker line."
+  (concat
+   (if halo-virtual-boundary-markers
+       (propertize " " 'display
+                   '(left-fringe halo--virtual-boundary-marker
+                                 halo-virtual-boundary-marker))
+     "")
+   "\n"))
+
+(defun halo--virtual-boundary-lines (line-count)
+  "Return LINE-COUNT display-only virtual boundary marker lines."
+  (mapconcat #'identity
+             (make-list (max 0 line-count)
+                        (halo--virtual-boundary-line))
+             ""))
+
+(defun halo--enable-empty-line-indicators ()
+  "Use the halo fringe marker for real empty lines after `point-max'."
+  (unless halo--empty-line-indicator-state
+    (setq halo--empty-line-indicator-state
+          (list (local-variable-p 'indicate-empty-lines)
+                indicate-empty-lines
+                (local-variable-p 'fringe-indicator-alist)
+                fringe-indicator-alist)))
+  (setq-local indicate-empty-lines halo-virtual-boundary-markers)
+  (setq-local fringe-indicator-alist
+              (cons '(empty-line . halo--virtual-boundary-marker)
+                    (assq-delete-all 'empty-line
+                                     (copy-sequence fringe-indicator-alist)))))
+
+(defun halo--restore-empty-line-indicators ()
+  "Restore empty-line fringe indicator state saved by halo."
+  (when halo--empty-line-indicator-state
+    (let ((had-local-indicate (nth 0 halo--empty-line-indicator-state))
+          (indicate-value (nth 1 halo--empty-line-indicator-state))
+          (had-local-fringe (nth 2 halo--empty-line-indicator-state))
+          (fringe-value (nth 3 halo--empty-line-indicator-state)))
+      (if had-local-indicate
+          (setq-local indicate-empty-lines indicate-value)
+        (kill-local-variable 'indicate-empty-lines))
+      (if had-local-fringe
+          (setq-local fringe-indicator-alist fringe-value)
+        (kill-local-variable 'fringe-indicator-alist)))
+    (setq halo--empty-line-indicator-state nil)))
+
 (defun halo--display-lines-before-point (window &optional limit)
   "Return display lines from `point-min' to point in WINDOW.
 When LIMIT is non-nil, stop counting after that many display lines."
@@ -445,7 +602,7 @@ When LIMIT is non-nil, stop counting after that many display lines."
 
 (defun halo--update-virtual-top-margin (window)
   "Update display-only space before the first buffer line for WINDOW."
-  (if (and halo-center-cursor
+  (if (and (halo--center-cursor-active-p window)
            halo-virtual-top-margin
            (window-live-p window)
            (eq (window-buffer window) (current-buffer)))
@@ -453,7 +610,7 @@ When LIMIT is non-nil, stop counting after that many display lines."
              (line-count (max 0 (- center-line
                                    (halo--display-lines-before-point
                                     window center-line))))
-             (before-string (make-string line-count ?\n))
+             (before-string (halo--virtual-boundary-lines line-count))
              (overlay (halo--virtual-top-margin-overlay window)))
         (unless overlay
           (setq overlay
@@ -492,16 +649,19 @@ When LIMIT is non-nil, stop counting after that many display lines."
              (window-live-p window)
              (eq (window-buffer window) (current-buffer))
              (not (minibufferp (current-buffer))))
-    (halo--update-virtual-top-margin window)
-    (let ((selected (selected-window)))
-      (unwind-protect
-          (progn
-            (select-window window 'norecord)
-            (if (< 0 (halo--virtual-top-margin-lines window))
-                (set-window-start window (point-min) t)
-              (recenter (halo--center-recenter-line window))))
-        (when (window-live-p selected)
-          (select-window selected 'norecord))))))
+    (if (halo--center-cursor-active-p window)
+        (progn
+          (halo--update-virtual-top-margin window)
+          (let ((selected (selected-window)))
+            (unwind-protect
+                (progn
+                  (select-window window 'norecord)
+                  (if (< 0 (halo--virtual-top-margin-lines window))
+                      (set-window-start window (point-min) t)
+                    (recenter (halo--center-recenter-line window))))
+              (when (window-live-p selected)
+                (select-window selected 'norecord)))))
+      (halo--delete-virtual-top-margin window))))
 
 (defun halo--skip-invisible (direction)
   "Move out of invisible text in DIRECTION when point is invisible."
@@ -586,7 +746,7 @@ visited line by line."
   "Return non-nil when point is visually at WINDOW's configured center.
 When virtual top margin is active, include its display-only lines because they
 shift point downward without changing its visible buffer line index."
-  (or (not halo-center-cursor)
+  (or (not (halo--center-cursor-active-p window))
       (= (halo--center-line window)
          (+ point-index (halo--virtual-top-margin-lines window)))))
 
@@ -669,7 +829,8 @@ When WINDOW is non-nil, refresh that window instead of the selected window."
         (let ((window (selected-window)))
           (if (halo--mouse-wheel-command-p)
               (progn
-                (halo--move-point-to-window-center window)
+                (when (halo--center-cursor-active-p window)
+                  (halo--move-point-to-window-center window))
                 (if halo-live-update
                     (halo--update-now window)
                   (progn
@@ -750,6 +911,7 @@ so disabling the mode removes all visual changes made by this package."
         (add-hook 'post-command-hook #'halo--post-command nil t)
         (add-hook 'after-change-functions #'halo--schedule-after-change nil t)
         (add-hook 'window-scroll-functions #'halo--window-scroll nil t)
+        (halo--enable-empty-line-indicators)
         (if halo-live-update
             (halo--update-now (selected-window))
           (progn
@@ -762,6 +924,7 @@ so disabling the mode removes all visual changes made by this package."
     (halo--cancel-timer)
     (halo--cancel-change-timer)
     (halo--delete-virtual-top-margin)
+    (halo--restore-empty-line-indicators)
     (halo--delete-overlays)
     (setq halo--window nil
           halo--in-command nil
