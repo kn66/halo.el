@@ -712,6 +712,43 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
+(ert-deftest halo-mouse-click-on-link-does-not-recenter-point ()
+  (let ((buffer (get-buffer-create " *halo-test-mouse-link*"))
+        (halo-center-cursor t)
+        (halo-virtual-top-margin nil)
+        (halo-radius 99)
+        (halo-live-update t))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 80)
+            (insert (format "line %d\n" index)))
+          (goto-char (point-min))
+          (forward-line 10)
+          (let ((link-position (point)))
+            (put-text-property link-position
+                               (line-end-position)
+                               'shr-url
+                               "https://example.com")
+            (goto-char (point-min))
+            (halo-mode 1)
+            (set-window-start (selected-window) (point-min) t)
+            (goto-char link-position)
+            (let ((last-input-event
+                   (list 'mouse-1
+                         (posn-at-point link-position (selected-window))))
+                  (this-command 'mouse-set-point))
+              (halo--post-command))
+            (should (= link-position (point)))))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
 (ert-deftest halo-mouse-wheel-text-scale-does-not-move-point ()
   (let ((buffer (get-buffer-create " *halo-test-mouse-wheel-text-scale*"))
         (halo-center-cursor nil)

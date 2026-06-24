@@ -417,6 +417,33 @@ buffer.  When WINDOW is non-nil, only delete overlays scoped to WINDOW."
   "Return non-nil when the current command came from mouse wheel scrolling."
   (memq this-command halo--mouse-wheel-commands))
 
+(defun halo--text-clickable-p (position)
+  "Return non-nil when text at POSITION looks mouse-clickable."
+  (or (get-char-property position 'button)
+      (get-char-property position 'follow-link)
+      (get-char-property position 'shr-url)
+      (get-char-property position 'help-echo)
+      (get-char-property position 'mouse-face)
+      (get-char-property position 'keymap)
+      (get-char-property position 'local-map)))
+
+(defun halo--mouse-click-on-clickable-text-p ()
+  "Return non-nil when the last input event clicked clickable text."
+  (and (mouse-event-p last-input-event)
+       (not (halo--mouse-wheel-command-p))
+       (let* ((start (event-start last-input-event))
+              (window (posn-window start))
+              (position (posn-point start)))
+         (and (windowp window)
+              (integer-or-marker-p position)
+              (buffer-live-p (window-buffer window))
+              (with-current-buffer (window-buffer window)
+                (let ((position (min (max (point-min) position)
+                                     (point-max))))
+                  (or (halo--text-clickable-p position)
+                      (and (< (point-min) position)
+                           (halo--text-clickable-p (1- position))))))))))
+
 (defun halo--image-display-spec-p (display)
   "Return non-nil when DISPLAY contains an image display specification."
   (cond
@@ -827,20 +854,23 @@ When WINDOW is non-nil, refresh that window instead of the selected window."
   (unwind-protect
       (when (eq (window-buffer (selected-window)) (current-buffer))
         (let ((window (selected-window)))
-          (if (halo--mouse-wheel-command-p)
-              (progn
-                (when (halo--center-cursor-active-p window)
-                  (halo--move-point-to-window-center window))
-                (if halo-live-update
-                    (halo--update-now window)
-                  (progn
-                    (halo--center-window window)
-                    (halo--schedule window))))
+          (cond
+           ((halo--mouse-wheel-command-p)
+            (when (halo--center-cursor-active-p window)
+              (halo--move-point-to-window-center window))
             (if halo-live-update
                 (halo--update-now window)
-              (progn
-                (halo--center-window window)
-                (halo--schedule window))))))
+              (halo--center-window window)
+              (halo--schedule window)))
+           ((halo--mouse-click-on-clickable-text-p)
+            (if halo-live-update
+                (halo--refresh (current-buffer) window)
+              (halo--schedule window)))
+           (halo-live-update
+            (halo--update-now window))
+           (t
+            (halo--center-window window)
+            (halo--schedule window)))))
     (setq halo--in-command nil)))
 
 (defun halo--window-scroll (window _display-start)
