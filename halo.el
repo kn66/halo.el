@@ -196,20 +196,11 @@ When the predicate returns non-nil, `halo-mode' is not enabled in that buffer."
 (defvar-local halo--virtual-top-margin-overlays nil
   "Hash table of display-only top margin overlays keyed by window.")
 
-(defvar-local halo--refresh-state nil
-  "Most recently used overlay refresh state.")
-
-(defvar-local halo--refresh-states nil
-  "Hash table of overlay refresh states keyed by window.")
-
 (defvar-local halo--refresh-input-states nil
   "Hash table of cheap pre-scan refresh states keyed by window.")
 
 (defvar-local halo--center-window-states nil
   "Hash table of cursor-centering states keyed by window.")
-
-(defvar-local halo--image-display-states nil
-  "Hash table of cached image-display fallback states keyed by window.")
 
 (defvar-local halo--empty-line-indicator-state nil
   "Previous empty-line fringe indicator state for this buffer.")
@@ -433,21 +424,6 @@ Lines inside `halo-focus-band' return nil and are left untouched."
             (puthash cache-key dim-face halo--face-cache)
             dim-face)))))
 
-(defun halo--cached-dim-face (face step default-foreground background
-                                   steps min-alpha falloff face-cache-key
-                                   dim-face-cache)
-  "Return FACE dimmed for STEP, using STEP-local DIM-FACE-CACHE when non-nil."
-  (if dim-face-cache
-      (let ((cached (gethash face dim-face-cache)))
-        (or cached
-            (let ((dim-face (halo--dim-face face step default-foreground
-                                            background steps min-alpha falloff
-                                            face-cache-key)))
-              (puthash face dim-face dim-face-cache)
-              dim-face)))
-    (halo--dim-face face step default-foreground background steps min-alpha
-                    falloff face-cache-key)))
-
 (defun halo--text-face-at (position)
   "Return the text face at POSITION."
   (or (get-text-property position 'face)
@@ -505,32 +481,21 @@ overlays are scanned only when CLEANUP-ORPHANS is non-nil or WINDOW is nil."
 
 (defun halo--make-line-overlays (start end step window &optional
                                        default-foreground background steps
-                                       min-alpha falloff face-cache-key
-                                       dim-face-cache)
+                                       min-alpha falloff face-cache-key)
   "Create dimming overlays from START to END for contrast STEP in WINDOW."
   (let ((position start)
         (face-cache-key (or face-cache-key
                             (halo--face-cache-key background steps min-alpha
                                                   falloff)))
-        use-dim-face-cache
         run-start
         run-face)
     (halo--ensure-face-cache face-cache-key)
     (while (< position end)
       (let* ((next (halo--next-face-change position end))
              (face (halo--text-face-at position))
-             (cachep (and dim-face-cache
-                          (or use-dim-face-cache
-                              (< next end))))
-             (dim-face (if cachep
-                           (halo--cached-dim-face
-                            face step default-foreground background steps
-                            min-alpha falloff face-cache-key dim-face-cache)
-                         (halo--dim-face face step default-foreground
-                                         background steps min-alpha falloff
-                                         face-cache-key))))
-        (when (< next end)
-          (setq use-dim-face-cache t))
+             (dim-face (halo--dim-face face step default-foreground
+                                       background steps min-alpha falloff
+                                       face-cache-key)))
         (cond
          ((null run-start)
           (setq run-start position
@@ -552,11 +517,6 @@ overlays are scanned only when CLEANUP-ORPHANS is non-nil or WINDOW is nil."
   "Return a weak hash table suitable for window keyed state."
   (make-hash-table :test #'eq :weakness 'key))
 
-(defun halo--refresh-states ()
-  "Return the per-window refresh state table for this buffer."
-  (or halo--refresh-states
-      (setq halo--refresh-states (halo--window-table))))
-
 (defun halo--refresh-input-states ()
   "Return the per-window pre-scan refresh state table for this buffer."
   (or halo--refresh-input-states
@@ -567,24 +527,10 @@ overlays are scanned only when CLEANUP-ORPHANS is non-nil or WINDOW is nil."
   (or halo--center-window-states
       (setq halo--center-window-states (halo--window-table))))
 
-(defun halo--image-display-states ()
-  "Return the per-window image-display fallback state table for this buffer."
-  (or halo--image-display-states
-      (setq halo--image-display-states (halo--window-table))))
-
 (defun halo--virtual-top-margin-overlays ()
   "Return the per-window virtual top margin overlay table for this buffer."
   (or halo--virtual-top-margin-overlays
       (setq halo--virtual-top-margin-overlays (halo--window-table))))
-
-(defun halo--refresh-state-for-window (window)
-  "Return cached refresh state for WINDOW."
-  (gethash window (halo--refresh-states)))
-
-(defun halo--set-refresh-state-for-window (window state)
-  "Set cached refresh STATE for WINDOW."
-  (setq halo--refresh-state state)
-  (puthash window state (halo--refresh-states)))
 
 (defun halo--refresh-input-state-for-window (window)
   "Return cached pre-scan refresh state for WINDOW."
@@ -601,14 +547,6 @@ overlays are scanned only when CLEANUP-ORPHANS is non-nil or WINDOW is nil."
 (defun halo--set-center-window-state-for-window (window state)
   "Set cached cursor-centering STATE for WINDOW."
   (puthash window state (halo--center-window-states)))
-
-(defun halo--image-display-state-for-window (window)
-  "Return cached image-display fallback state for WINDOW."
-  (gethash window (halo--image-display-states)))
-
-(defun halo--set-image-display-state-for-window (window state)
-  "Set cached image-display fallback STATE for WINDOW."
-  (puthash window state (halo--image-display-states)))
 
 (defun halo--virtual-top-margin-overlay (window)
   "Return display-only top margin overlay for WINDOW."
@@ -652,18 +590,32 @@ overlays are scanned only when CLEANUP-ORPHANS is non-nil or WINDOW is nil."
 
 (defun halo--image-display-spec-p (display)
   "Return non-nil when DISPLAY contains an image display specification."
-  (cond
-   ((and (consp display)
-         (eq (car display) 'image))
-    t)
-   ((consp display)
-    (catch 'image
-      (dolist (entry display)
-        (when (halo--image-display-spec-p entry)
-          (throw 'image t)))
-      nil))
-   (t
-    nil)))
+  (let ((stack (list display))
+        (seen (make-hash-table :test #'eq))
+        (budget 1024)
+        found)
+    (while (and stack
+                (not found)
+                (< 0 budget))
+      (let ((value (pop stack)))
+        (setq budget (1- budget))
+        (cond
+         ((and (consp value)
+               (eq (car value) 'image))
+          (setq found t))
+         ((consp value)
+          (let ((tail value))
+            (while (and (consp tail)
+                        (not (gethash tail seen))
+                        (< 0 budget))
+              (puthash tail t seen)
+              (push (car tail) stack)
+              (setq tail (cdr tail)
+                    budget (1- budget)))
+            (when (and tail
+                       (not (gethash tail seen)))
+              (push tail stack)))))))
+    found))
 
 (defun halo--display-line-has-image-display-p (start end)
   "Return non-nil when text between START and END has an image display."
@@ -709,43 +661,10 @@ overlays are scanned only when CLEANUP-ORPHANS is non-nil or WINDOW is nil."
             current-start)
           next-end)))
 
-(defun halo--display-overlays-have-image-display-p (start end)
-  "Return non-nil when an overlay between START and END has an image display."
-  (catch 'image
-    (dolist (overlay (overlays-in start end))
-      (when (halo--image-display-spec-p (overlay-get overlay 'display))
-        (throw 'image t)))
-    nil))
-
 (defun halo--nearby-display-line-has-image-display-p (window)
   "Return non-nil when point's display line or a neighbor has an image."
   (let ((bounds (halo--nearby-display-line-bounds window)))
     (halo--display-line-has-image-display-p (car bounds) (cdr bounds))))
-
-(defun halo--image-display-state (window)
-  "Return state that affects image-display fallback checks for WINDOW."
-  (let ((bounds (halo--nearby-display-line-bounds window)))
-    (list window
-          (point)
-          (window-start window)
-          (window-body-height window)
-          (window-body-width window)
-          (buffer-modified-tick)
-          halo-center-cursor-display-fallback
-          bounds
-          (halo--display-overlays-have-image-display-p
-           (car bounds) (cdr bounds)))))
-
-(defun halo--cached-nearby-display-line-has-image-display-p (window)
-  "Return cached image-display fallback result for WINDOW."
-  (let* ((state (halo--image-display-state window))
-         (cached (halo--image-display-state-for-window window)))
-    (if (and cached (equal state (car cached)))
-        (cdr cached)
-      (let ((result (halo--nearby-display-line-has-image-display-p window)))
-        (halo--set-image-display-state-for-window window
-                                                  (cons state result))
-        result))))
 
 (defun halo--center-cursor-active-p (window)
   "Return non-nil when cursor centering should be active in WINDOW."
@@ -753,8 +672,7 @@ overlays are scanned only when CLEANUP-ORPHANS is non-nil or WINDOW is nil."
        (window-live-p window)
        (eq (window-buffer window) (current-buffer))
        (not (and halo-center-cursor-display-fallback
-                 (halo--cached-nearby-display-line-has-image-display-p
-                  window)))))
+                 (halo--nearby-display-line-has-image-display-p window)))))
 
 (defun halo--move-point-to-window-center (window)
   "Move point to the display line nearest WINDOW's configured center."
@@ -928,31 +846,32 @@ When LIMIT is non-nil, stop counting after that many display lines."
         halo-virtual-top-margin
         halo-virtual-boundary-markers
         (and halo-center-cursor-display-fallback
-             (halo--image-display-state window))))
+             (halo--nearby-display-line-has-image-display-p window))))
 
 (defun halo--center-window (window)
   "Recenter WINDOW around point when cursor centering is enabled."
-  (when (and halo-center-cursor
-             (window-live-p window)
+  (when (and (window-live-p window)
              (eq (window-buffer window) (current-buffer))
              (not (minibufferp (current-buffer))))
-    (let ((state (halo--center-window-state window)))
-      (unless (equal state (halo--center-window-state-for-window window))
-        (if (halo--center-cursor-active-p window)
-            (progn
-              (halo--update-virtual-top-margin window)
-              (let ((selected (selected-window)))
-                (unwind-protect
-                    (progn
-                      (select-window window 'norecord)
-                      (if (< 0 (halo--virtual-top-margin-lines window))
-                          (set-window-start window (point-min) t)
-                        (recenter (halo--center-recenter-line window))))
-                  (when (window-live-p selected)
-                    (select-window selected 'norecord)))))
-          (halo--delete-virtual-top-margin window))
-        (halo--set-center-window-state-for-window
-         window (halo--center-window-state window))))))
+    (if halo-center-cursor
+        (let ((state (halo--center-window-state window)))
+          (unless (equal state (halo--center-window-state-for-window window))
+            (if (halo--center-cursor-active-p window)
+                (progn
+                  (halo--update-virtual-top-margin window)
+                  (let ((selected (selected-window)))
+                    (unwind-protect
+                        (progn
+                          (select-window window 'norecord)
+                          (if (< 0 (halo--virtual-top-margin-lines window))
+                              (set-window-start window (point-min) t)
+                            (recenter (halo--center-recenter-line window))))
+                      (when (window-live-p selected)
+                        (select-window selected 'norecord)))))
+              (halo--delete-virtual-top-margin window))
+            (halo--set-center-window-state-for-window
+             window (halo--center-window-state window))))
+      (halo--delete-virtual-top-margin window))))
 
 (defun halo--skip-invisible (direction)
   "Move out of invisible text in DIRECTION when point is invisible."
@@ -999,7 +918,7 @@ visited line by line."
           (window-end window t)
           (window-body-height window)
           (window-body-width window)
-          (buffer-chars-modified-tick)
+          (buffer-modified-tick)
           (halo--virtual-top-margin-lines window)
           (halo--focus-band line-count)
           (max 1 halo-steps)
@@ -1007,10 +926,6 @@ visited line by line."
           halo-falloff
           (halo--default-foreground)
           (halo--default-background))))
-
-(defun halo--refresh-state (input-state lines)
-  "Return the full refresh state from INPUT-STATE and LINES."
-  (append input-state (list (length lines))))
 
 (defun halo--refresh (buffer window &optional force)
   "Refresh halo overlays for BUFFER in WINDOW."
@@ -1034,16 +949,11 @@ visited line by line."
                    (falloff (nth 10 input-state))
                    (default-foreground (nth 11 input-state))
                    (default-background (nth 12 input-state))
-                   (dim-face-caches
-                    (make-hash-table :test #'equal
-                                     :size (max 1 (truncate steps))))
                    (face-cache-key (halo--face-cache-key default-background
                                                           steps min-alpha
                                                           falloff))
-                   (state (halo--refresh-state input-state lines))
                    (index 0))
               (halo--set-refresh-input-state-for-window window input-state)
-              (halo--set-refresh-state-for-window window state)
               (if lines
                   (halo--delete-overlays
                    (caar lines) (cdar (last lines)) window force)
@@ -1057,18 +967,11 @@ visited line by line."
                                                         focus-band
                                                         steps)))
                   (when step
-                    (let ((dim-face-cache
-                           (or (gethash step dim-face-caches)
-                               (let ((cache (make-hash-table :test #'equal
-                                                             :size 16)))
-                                 (puthash step cache dim-face-caches)
-                                 cache))))
-                      (halo--make-line-overlays line-start line-end step window
-                                                default-foreground
-                                                default-background
-                                                steps min-alpha falloff
-                                                face-cache-key
-                                                dim-face-cache)))
+                    (halo--make-line-overlays line-start line-end step window
+                                              default-foreground
+                                              default-background
+                                              steps min-alpha falloff
+                                              face-cache-key))
                   (setq index (1+ index)))))))))))
 
 (defun halo--schedule (&optional window)
@@ -1243,11 +1146,8 @@ so disabling the mode removes all visual changes made by this package."
     (setq halo--window nil
           halo--in-command nil
           halo--pending-change-range nil
-          halo--refresh-state nil
-          halo--refresh-states nil
           halo--refresh-input-states nil
           halo--center-window-states nil
-          halo--image-display-states nil
           halo--virtual-top-margin-overlays nil)))
 
 ;;;###autoload
