@@ -6,6 +6,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'seq)
 (require 'halo)
@@ -14,13 +15,46 @@
   "HaloTestSpecial"
   "Derived mode used by halo tests.")
 
-(ert-deftest halo-step-for-distance-respects-radius-and-steps ()
-  (let ((halo-radius 2)
-        (halo-steps 3))
-    (should-not (halo--step-for-distance 0))
-    (should-not (halo--step-for-distance 2))
-    (should (= 1 (halo--step-for-distance 3)))
-    (should (= 3 (halo--step-for-distance 20)))))
+(defun halo-test-halo-overlay-at-p (position)
+  "Return non-nil when a halo contrast overlay covers POSITION."
+  (seq-some
+   (lambda (overlay)
+     (and (overlay-buffer overlay)
+          (overlay-get overlay 'halo)
+          (<= (overlay-start overlay) position)
+          (< position (overlay-end overlay))))
+   halo--overlays))
+
+(ert-deftest halo-step-for-line-index-respects-focus-band-and-steps ()
+  (let ((halo-focus-band '(0.25 . 0.75))
+        (halo-steps 4))
+    (should (= 4 (halo--step-for-line-index 0 9)))
+    (should (= 2 (halo--step-for-line-index 1 9)))
+    (should-not (halo--step-for-line-index 2 9))
+    (should-not (halo--step-for-line-index 4 9))
+    (should-not (halo--step-for-line-index 6 9))
+    (should (= 2 (halo--step-for-line-index 7 9)))
+    (should (= 4 (halo--step-for-line-index 8 9)))))
+
+(ert-deftest halo-step-for-line-index-honors-obsolete-radius ()
+  (let ((halo-focus-band (halo--default-focus-band))
+        (halo-radius 2)
+        (halo-steps 4)
+        (halo--legacy-radius-warning-shown t))
+    (should (= 4 (halo--step-for-line-index 0 9)))
+    (should (= 2 (halo--step-for-line-index 1 9)))
+    (should-not (halo--step-for-line-index 2 9))
+    (should-not (halo--step-for-line-index 6 9))
+    (should (= 2 (halo--step-for-line-index 7 9)))
+    (should (= 4 (halo--step-for-line-index 8 9)))))
+
+(ert-deftest halo-step-for-line-index-prefers-explicit-focus-band ()
+  (let ((halo-focus-band '(0.0 . 1.0))
+        (halo-radius 0)
+        (halo-steps 4)
+        (halo--legacy-radius-warning-shown t))
+    (should-not (halo--step-for-line-index 0 9))
+    (should-not (halo--step-for-line-index 8 9))))
 
 (ert-deftest halo-alpha-for-step-blends-to-min-alpha ()
   (let ((halo-steps 4)
@@ -53,12 +87,50 @@
 (ert-deftest halo-face-foreground-ignores-unknown-face-symbols ()
   (should-not (halo--face-foreground 'halo-test-missing-face)))
 
-(ert-deftest halo-display-line-index-finds-containing-or-following-line ()
-  (let ((lines '((1 . 5) (8 . 12) (12 . 20))))
-    (should (= 0 (halo--display-line-index 3 lines)))
-    (should (= 1 (halo--display-line-index 6 lines)))
-    (should (= 2 (halo--display-line-index 18 lines)))
-    (should (= 2 (halo--display-line-index 40 lines)))))
+(ert-deftest halo-make-line-overlays-coalesces-equivalent-dim-faces ()
+  (let ((buffer (get-buffer-create " *halo-test-coalesce-overlays*"))
+        (halo-min-alpha 0.5))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (insert "abc")
+          (put-text-property (point-min) (1+ (point-min))
+                             'face '(:foreground "red"))
+          (put-text-property (1+ (point-min)) (point-max)
+                             'face '(:foreground "red" :weight bold))
+          (setq halo--overlays nil)
+          (halo--make-line-overlays (point-min) (point-max)
+                                    1 (selected-window))
+          (should (= 1 (length halo--overlays)))
+          (should (= (point-min) (overlay-start (car halo--overlays))))
+          (should (= (point-max) (overlay-end (car halo--overlays)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-delete-overlays-cleans-orphans-only-when-requested ()
+  (let ((buffer (get-buffer-create " *halo-test-delete-orphans*")))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (insert "abc\n")
+          (setq halo--overlays nil)
+          (halo--make-overlay (point-min) (1+ (point-min))
+                              '(:foreground "red") (selected-window))
+          (let ((orphan (make-overlay (point-min) (1+ (point-min))
+                                      (current-buffer) nil t)))
+            (overlay-put orphan 'halo t)
+            (overlay-put orphan 'window (selected-window))
+            (halo--delete-overlays (point-min) (point-max)
+                                   (selected-window))
+            (should-not halo--overlays)
+            (should (overlay-buffer orphan))
+            (halo--delete-overlays (point-min) (point-max)
+                                   (selected-window) t)
+            (should-not (overlay-buffer orphan))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest halo-center-line-respects-center-fraction ()
   (let ((buffer (get-buffer-create " *halo-test-center-fraction*"))
@@ -74,7 +146,6 @@
 
 (ert-deftest halo-refresh-skips-unchanged-state ()
   (let ((buffer (get-buffer-create " *halo-test-refresh*"))
-        (halo-radius 0)
         (halo-steps 2)
         (halo-min-alpha 0.5)
         (halo-center-cursor nil)
@@ -90,6 +161,7 @@
           (let ((overlays halo--overlays)
                 (state halo--refresh-state))
             (should overlays)
+            (forward-line 1)
             (halo--update-now (selected-window))
             (should (eq overlays halo--overlays))
             (should (equal state halo--refresh-state))))
@@ -99,9 +171,35 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
+(ert-deftest halo-refresh-skips-visible-line-scan-when-input-state-unchanged ()
+  (let ((buffer (get-buffer-create " *halo-test-refresh-fast-skip*"))
+        (halo-steps 2)
+        (halo-min-alpha 0.5)
+        (halo-center-cursor nil)
+        (halo-virtual-top-margin nil)
+        scanned)
+    (unwind-protect
+        (progn
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 40)
+            (insert (format "line %d\n" index)))
+          (goto-char (point-min))
+          (halo-mode 1)
+          (cl-letf (((symbol-function 'halo--visible-display-lines)
+                     (lambda (&rest _)
+                       (setq scanned t)
+                       (error "unexpected display-line scan"))))
+            (halo--refresh (current-buffer) (selected-window)))
+          (should-not scanned))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
 (ert-deftest halo-overlays-are-window-local ()
   (let ((buffer (get-buffer-create " *halo-test-window-local*"))
-        (halo-radius 0)
         (halo-steps 2)
         (halo-min-alpha 0.5)
         (halo-center-cursor nil)
@@ -144,7 +242,6 @@
 
 (ert-deftest halo-refresh-all-keeps-overlays-for-each-window ()
   (let ((buffer (get-buffer-create " *halo-test-refresh-all*"))
-        (halo-radius 0)
         (halo-steps 2)
         (halo-min-alpha 0.5)
         (halo-center-cursor nil)
@@ -181,7 +278,6 @@
 
 (ert-deftest halo-refresh-state-is-window-local ()
   (let ((buffer (get-buffer-create " *halo-test-window-state*"))
-        (halo-radius 0)
         (halo-steps 2)
         (halo-min-alpha 0.5)
         (halo-center-cursor nil)
@@ -215,9 +311,8 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
-(ert-deftest halo-refresh-skips-dimming-when-point-is-not-centered ()
+(ert-deftest halo-refresh-dims-from-viewport-when-point-is-not-centered ()
   (let ((buffer (get-buffer-create " *halo-test-noncentered*"))
-        (halo-radius 0)
         (halo-steps 2)
         (halo-min-alpha 0.5)
         (halo-center-cursor t)
@@ -237,7 +332,7 @@
           (goto-char (point-min))
           (set-window-start (selected-window) (point-min) t)
           (halo-refresh t)
-          (should-not halo--overlays))
+          (should halo--overlays))
       (delete-other-windows)
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
@@ -245,9 +340,8 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
-(ert-deftest halo-refresh-treats-virtual-top-margin-as-centered ()
+(ert-deftest halo-refresh-dims-with-virtual-top-margin ()
   (let ((buffer (get-buffer-create " *halo-test-margin-centered*"))
-        (halo-radius 0)
         (halo-steps 2)
         (halo-min-alpha 0.5)
         (halo-center-cursor t)
@@ -263,7 +357,37 @@
           (goto-char (point-min))
           (halo-mode 1)
           (should (< 0 (halo--virtual-top-margin-lines (selected-window))))
-          (should halo--overlays))
+          (should halo--overlays)
+          (should-not (halo-test-halo-overlay-at-p (point-min))))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-refresh-keeps-buffer-end-normal-when-centered ()
+  (let ((buffer (get-buffer-create " *halo-test-end-centered*"))
+        (halo-steps 2)
+        (halo-min-alpha 0.5)
+        (halo-center-cursor t)
+        (halo-virtual-top-margin t)
+        (halo-live-update t)
+        last-line-start)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 80)
+            (insert (format "line %d%s"
+                            index
+                            (if (< index 79) "\n" ""))))
+          (goto-char (point-max))
+          (setq last-line-start (line-beginning-position))
+          (halo-mode 1)
+          (should halo--overlays)
+          (should-not (halo-test-halo-overlay-at-p last-line-start)))
       (delete-other-windows)
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
@@ -275,7 +399,6 @@
   (let ((buffer (get-buffer-create " *halo-test-virtual-margin*"))
         (halo-center-cursor t)
         (halo-virtual-top-margin t)
-        (halo-radius 99)
         (halo-live-update t)
         first-window
         second-window)
@@ -317,7 +440,6 @@
   (let ((buffer (get-buffer-create " *halo-test-short-buffer-margin*"))
         (halo-center-cursor t)
         (halo-virtual-top-margin t)
-        (halo-radius 99)
         (halo-live-update t))
     (unwind-protect
         (progn
@@ -371,7 +493,6 @@
         (halo-center-cursor t)
         (halo-virtual-top-margin t)
         (halo-virtual-boundary-markers t)
-        (halo-radius 99)
         (halo-live-update t))
     (unwind-protect
         (progn
@@ -443,7 +564,6 @@
   (let ((buffer (get-buffer-create " *halo-test-recenter-line*"))
         (halo-center-cursor t)
         (halo-virtual-top-margin t)
-        (halo-radius 99)
         (halo-live-update t))
     (unwind-protect
         (progn
@@ -467,7 +587,6 @@
   (let ((buffer (get-buffer-create " *halo-test-orphan-margin*"))
         (halo-center-cursor t)
         (halo-virtual-top-margin t)
-        (halo-radius 99)
         (halo-live-update t))
     (unwind-protect
         (progn
@@ -504,7 +623,6 @@
   (let ((buffer (get-buffer-create " *halo-test-margin-window-start*"))
         (halo-center-cursor t)
         (halo-virtual-top-margin t)
-        (halo-radius 99)
         (halo-live-update t))
     (unwind-protect
         (progn
@@ -526,12 +644,35 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
+(ert-deftest halo-center-window-skips-unchanged-state ()
+  (let ((buffer (get-buffer-create " *halo-test-center-skip*"))
+        (halo-center-cursor t)
+        (halo-virtual-top-margin t)
+        (halo-live-update t))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (insert "first\nsecond\nthird\n")
+          (goto-char (point-min))
+          (halo-mode 1)
+          (cl-letf (((symbol-function 'halo--center-cursor-active-p)
+                     (lambda (&rest _)
+                       (error "unexpected centering recomputation"))))
+            (halo--center-window (selected-window))))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
 (ert-deftest halo-image-display-suspends-centering-only ()
   (let ((buffer (get-buffer-create " *halo-test-image-display*"))
         (halo-center-cursor t)
         (halo-center-cursor-display-fallback t)
         (halo-virtual-top-margin t)
-        (halo-radius 0)
         (halo-live-update t)
         before-position
         image-position)
@@ -571,12 +712,87 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
+(ert-deftest halo-image-display-fallback-caches-unchanged-state ()
+  (let ((buffer (get-buffer-create " *halo-test-image-display-cache*"))
+        (halo-center-cursor t)
+        (halo-center-cursor-display-fallback t)
+        calls)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (insert "first\nsecond\nthird\n")
+          (goto-char (point-min))
+          (cl-letf (((symbol-function
+                      'halo--nearby-display-line-has-image-display-p)
+                     (lambda (&rest _)
+                       (setq calls (1+ (or calls 0)))
+                       nil)))
+            (should (halo--center-cursor-active-p (selected-window)))
+            (should (halo--center-cursor-active-p (selected-window)))
+            (should (= 1 calls))
+            (forward-line 1)
+            (should (halo--center-cursor-active-p (selected-window)))
+            (should (= 2 calls))))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-image-display-fallback-invalidates-text-property-cache ()
+  (let ((buffer (get-buffer-create " *halo-test-image-display-text-cache*"))
+        (halo-center-cursor t)
+        (halo-center-cursor-display-fallback t))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (insert "first\nsecond\nthird\n")
+          (goto-char (point-min))
+          (should (halo--center-cursor-active-p (selected-window)))
+          (put-text-property
+           (point-min) (1+ (point-min))
+           'display '(image :type pbm :data "P1\n1 1\n0\n"))
+          (should-not (halo--center-cursor-active-p (selected-window))))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-center-window-rechecks-image-overlay-changes ()
+  (let ((buffer (get-buffer-create " *halo-test-image-overlay-cache*"))
+        (halo-center-cursor t)
+        (halo-center-cursor-display-fallback t)
+        (halo-virtual-top-margin t)
+        (halo-live-update t))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (insert "first\nsecond\nthird\n")
+          (goto-char (point-min))
+          (halo-mode 1)
+          (should (halo--virtual-top-margin-overlay (selected-window)))
+          (let ((overlay (make-overlay (point-min) (1+ (point-min))
+                                       (current-buffer) nil t)))
+            (overlay-put overlay 'display
+                         '(image :type pbm :data "P1\n1 1\n0\n"))
+            (halo--center-window (selected-window))
+            (should-not (halo--virtual-top-margin-overlay
+                         (selected-window)))))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
 (ert-deftest halo-image-display-fallback-removes-existing-virtual-margin ()
   (let ((buffer (get-buffer-create " *halo-test-image-display-margin*"))
         (halo-center-cursor t)
         (halo-center-cursor-display-fallback t)
         (halo-virtual-top-margin t)
-        (halo-radius 99)
         (halo-live-update t)
         before-image-position)
     (unwind-protect
@@ -654,7 +870,6 @@
   (let ((buffer (get-buffer-create " *halo-test-process-output*"))
         (halo-center-cursor t)
         (halo-virtual-top-margin t)
-        (halo-radius 99)
         (halo-live-update t))
     (unwind-protect
         (progn
@@ -679,7 +894,6 @@
   (let ((buffer (get-buffer-create " *halo-test-mouse-wheel*"))
         (halo-center-cursor t)
         (halo-virtual-top-margin t)
-        (halo-radius 0)
         (halo-live-update t))
     (unwind-protect
         (progn
@@ -716,7 +930,6 @@
   (let ((buffer (get-buffer-create " *halo-test-mouse-link*"))
         (halo-center-cursor t)
         (halo-virtual-top-margin nil)
-        (halo-radius 99)
         (halo-live-update t))
     (unwind-protect
         (progn
@@ -752,7 +965,6 @@
 (ert-deftest halo-mouse-wheel-text-scale-does-not-move-point ()
   (let ((buffer (get-buffer-create " *halo-test-mouse-wheel-text-scale*"))
         (halo-center-cursor nil)
-        (halo-radius 0)
         (halo-live-update t))
     (unwind-protect
         (progn
@@ -785,7 +997,6 @@
 
 (ert-deftest halo-refresh-force-rebuilds-overlays ()
   (let ((buffer (get-buffer-create " *halo-test-refresh-api*"))
-        (halo-radius 0)
         (halo-steps 2)
         (halo-min-alpha 0.5)
         (halo-center-cursor nil)
@@ -803,6 +1014,32 @@
             (halo-refresh t)
             (should halo--overlays)
             (should-not (eq overlays halo--overlays))))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-refresh-force-removes-contrast-orphan-overlays ()
+  (let ((buffer (get-buffer-create " *halo-test-refresh-orphan*"))
+        (halo-steps 2)
+        (halo-min-alpha 0.5)
+        (halo-center-cursor nil)
+        (halo-virtual-top-margin nil))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 40)
+            (insert (format "line %d\n" index)))
+          (goto-char (point-min))
+          (halo-mode 1)
+          (let ((orphan (make-overlay (point-min) (1+ (point-min))
+                                      (current-buffer) nil t)))
+            (overlay-put orphan 'halo t)
+            (overlay-put orphan 'window (selected-window))
+            (halo-refresh t)
+            (should-not (overlay-buffer orphan))))
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (when halo-mode
@@ -831,6 +1068,37 @@
           (halo--global-enable)
           (should-not halo-mode))
       (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-after-change-skips-refresh-after-visible-window ()
+  (let ((buffer (get-buffer-create " *halo-test-after-change-after-window*"))
+        (halo-center-cursor nil)
+        (halo-live-update t)
+        updated)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 120)
+            (insert (format "line %d\n" index)))
+          (goto-char (point-min))
+          (set-window-start (selected-window) (point-min) t)
+          (halo-mode 1)
+          (setq halo--pending-change-range (cons (point-max) (point-max)))
+          (cl-letf (((symbol-function 'halo--update-now)
+                     (lambda (&rest _)
+                       (setq updated t)))
+                    ((symbol-function 'window-end)
+                     (lambda (&rest _)
+                       (point-min))))
+            (halo--after-change-update buffer))
+          (should-not updated))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
         (kill-buffer buffer)))))
 
 (ert-deftest halo-after-change-skips-command-loop-refresh ()
