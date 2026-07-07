@@ -433,6 +433,21 @@ Lines inside `halo-focus-band' return nil and are left untouched."
             (puthash cache-key dim-face halo--face-cache)
             dim-face)))))
 
+(defun halo--cached-dim-face (face step default-foreground background
+                                   steps min-alpha falloff face-cache-key
+                                   dim-face-cache)
+  "Return FACE dimmed for STEP, using STEP-local DIM-FACE-CACHE when non-nil."
+  (if dim-face-cache
+      (let ((cached (gethash face dim-face-cache)))
+        (or cached
+            (let ((dim-face (halo--dim-face face step default-foreground
+                                            background steps min-alpha falloff
+                                            face-cache-key)))
+              (puthash face dim-face dim-face-cache)
+              dim-face)))
+    (halo--dim-face face step default-foreground background steps min-alpha
+                    falloff face-cache-key)))
+
 (defun halo--text-face-at (position)
   "Return the text face at POSITION."
   (or (get-text-property position 'face)
@@ -490,21 +505,32 @@ overlays are scanned only when CLEANUP-ORPHANS is non-nil or WINDOW is nil."
 
 (defun halo--make-line-overlays (start end step window &optional
                                        default-foreground background steps
-                                       min-alpha falloff face-cache-key)
+                                       min-alpha falloff face-cache-key
+                                       dim-face-cache)
   "Create dimming overlays from START to END for contrast STEP in WINDOW."
   (let ((position start)
         (face-cache-key (or face-cache-key
                             (halo--face-cache-key background steps min-alpha
                                                   falloff)))
+        use-dim-face-cache
         run-start
         run-face)
     (halo--ensure-face-cache face-cache-key)
     (while (< position end)
       (let* ((next (halo--next-face-change position end))
              (face (halo--text-face-at position))
-             (dim-face (halo--dim-face face step default-foreground
-                                       background steps min-alpha falloff
-                                       face-cache-key)))
+             (cachep (and dim-face-cache
+                          (or use-dim-face-cache
+                              (< next end))))
+             (dim-face (if cachep
+                           (halo--cached-dim-face
+                            face step default-foreground background steps
+                            min-alpha falloff face-cache-key dim-face-cache)
+                         (halo--dim-face face step default-foreground
+                                         background steps min-alpha falloff
+                                         face-cache-key))))
+        (when (< next end)
+          (setq use-dim-face-cache t))
         (cond
          ((null run-start)
           (setq run-start position
@@ -1008,6 +1034,9 @@ visited line by line."
                    (falloff (nth 10 input-state))
                    (default-foreground (nth 11 input-state))
                    (default-background (nth 12 input-state))
+                   (dim-face-caches
+                    (make-hash-table :test #'equal
+                                     :size (max 1 (truncate steps))))
                    (face-cache-key (halo--face-cache-key default-background
                                                           steps min-alpha
                                                           falloff))
@@ -1028,11 +1057,18 @@ visited line by line."
                                                         focus-band
                                                         steps)))
                   (when step
-                    (halo--make-line-overlays line-start line-end step window
-                                              default-foreground
-                                              default-background
-                                              steps min-alpha falloff
-                                              face-cache-key))
+                    (let ((dim-face-cache
+                           (or (gethash step dim-face-caches)
+                               (let ((cache (make-hash-table :test #'equal
+                                                             :size 16)))
+                                 (puthash step cache dim-face-caches)
+                                 cache))))
+                      (halo--make-line-overlays line-start line-end step window
+                                                default-foreground
+                                                default-background
+                                                steps min-alpha falloff
+                                                face-cache-key
+                                                dim-face-cache)))
                   (setq index (1+ index)))))))))))
 
 (defun halo--schedule (&optional window)
