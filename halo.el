@@ -985,7 +985,7 @@ visited line by line."
     (list window
           (window-start window)
           (window-end window t)
-          (halo--viewport-line-count window)
+          line-count
           (window-body-width window)
           (buffer-modified-tick)
           (halo--virtual-top-margin-lines window)
@@ -1048,15 +1048,17 @@ visited line by line."
   "Schedule a delayed halo refresh for the current buffer.
 When WINDOW is non-nil, refresh that window instead of the selected window."
   (when halo-mode
-    (when halo--timer
-      (cancel-timer halo--timer))
     (let ((target-window (or window (selected-window))))
-      (setq halo--window target-window)
-      (setq halo--timer
-            (run-with-idle-timer halo-idle-delay nil
-                                 #'halo--refresh
-                                 (current-buffer)
-                                 target-window)))))
+      (unless (and halo--timer
+                   (eq target-window halo--window))
+        (when halo--timer
+          (cancel-timer halo--timer))
+        (setq halo--window target-window)
+        (setq halo--timer
+              (run-with-idle-timer halo-idle-delay nil
+                                   #'halo--refresh
+                                   (current-buffer)
+                                   target-window))))))
 
 (defun halo--record-pending-change (start end)
   "Merge changed START and END into `halo--pending-change-range'."
@@ -1078,12 +1080,11 @@ When WINDOW is non-nil, refresh that window instead of the selected window."
   (when (and halo-mode
              (not halo--in-command))
     (halo--record-pending-change start end)
-    (when halo--change-timer
-      (cancel-timer halo--change-timer))
-    (setq halo--change-timer
-          (run-at-time 0 nil
-                       #'halo--after-change-update
-                       (current-buffer)))))
+    (unless halo--change-timer
+      (setq halo--change-timer
+            (run-at-time 0 nil
+                         #'halo--after-change-update
+                         (current-buffer))))))
 
 (defun halo--after-change-update (buffer)
   "Update centering and overlays for BUFFER after a buffer change."

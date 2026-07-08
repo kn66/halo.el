@@ -427,6 +427,54 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
+(ert-deftest halo-refresh-input-state-reuses-line-count ()
+  (let ((buffer (get-buffer-create " *halo-test-refresh-input-state*"))
+        (calls 0))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (cl-letf (((symbol-function 'halo--viewport-line-count)
+                     (lambda (_window)
+                       (setq calls (1+ calls))
+                       42)))
+            (let ((state (halo--refresh-input-state (selected-window))))
+              (should (= calls 1))
+              (should (= 42 (nth 3 state))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-schedule-reuses-pending-refresh-for-same-window ()
+  (let ((buffer (get-buffer-create " *halo-test-schedule-reuse*"))
+        (created 0)
+        (cancelled 0)
+        first-timer)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (setq-local halo-mode t)
+          (setq halo--timer nil
+                halo--window nil)
+          (cl-letf (((symbol-function 'run-with-idle-timer)
+                     (lambda (&rest _args)
+                       (setq created (1+ created))
+                       (list 'halo-test-timer created)))
+                    ((symbol-function 'cancel-timer)
+                     (lambda (&rest _args)
+                       (setq cancelled (1+ cancelled)))))
+            (halo--schedule (selected-window))
+            (setq first-timer halo--timer)
+            (halo--schedule (selected-window))
+            (should (= created 1))
+            (should (= cancelled 0))
+            (should (eq first-timer halo--timer)))
+          (setq halo--timer nil
+                halo--window nil
+                halo-mode nil))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest halo-refresh-dims-from-viewport-when-point-is-not-centered ()
   (let ((buffer (get-buffer-create " *halo-test-noncentered*"))
         (halo-steps 2)
@@ -1379,6 +1427,37 @@
         (with-current-buffer buffer
           (when halo-mode
             (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-schedule-after-change-reuses-pending-timer ()
+  (let ((buffer (get-buffer-create " *halo-test-after-change-reuse*"))
+        (created 0)
+        (cancelled 0)
+        first-timer)
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq-local halo-mode t)
+          (setq halo--in-command nil
+                halo--change-timer nil
+                halo--pending-change-range nil)
+          (cl-letf (((symbol-function 'run-at-time)
+                     (lambda (&rest _args)
+                       (setq created (1+ created))
+                       (list 'halo-test-change-timer created)))
+                    ((symbol-function 'cancel-timer)
+                     (lambda (&rest _args)
+                       (setq cancelled (1+ cancelled)))))
+            (halo--schedule-after-change 3 4)
+            (setq first-timer halo--change-timer)
+            (halo--schedule-after-change 8 9)
+            (should (= created 1))
+            (should (= cancelled 0))
+            (should (eq first-timer halo--change-timer))
+            (should (equal (cons 3 9) halo--pending-change-range)))
+          (setq halo--change-timer nil
+                halo--pending-change-range nil
+                halo-mode nil))
+      (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (provide 'halo-test)
