@@ -8,6 +8,7 @@
 
 (require 'cl-lib)
 (require 'ert)
+(require 'face-remap)
 (require 'seq)
 (require 'halo)
 
@@ -138,9 +139,38 @@
     (unwind-protect
         (progn
           (switch-to-buffer buffer)
-          (should (= (round (* (1- (window-body-height (selected-window)))
+          (should (= (round (* (1- (halo--window-screen-lines
+                                     (selected-window)))
                                halo-center-fraction))
                      (halo--center-line (selected-window)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-center-line-uses-text-scaled-screen-lines ()
+  (let ((buffer (get-buffer-create " *halo-test-center-screen-lines*"))
+        (halo-center-fraction 0.5))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buffer)
+          (cl-letf (((symbol-function 'window-screen-lines)
+                     (lambda () 11.0)))
+            (should (= 5 (halo--center-line (selected-window))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-center-line-applies-face-remapping-height-scale ()
+  (let ((buffer (get-buffer-create " *halo-test-center-remap-lines*"))
+        (halo-center-fraction 0.5))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buffer)
+          (setq-local face-remapping-alist '((default (:height 2.0))))
+          (cl-letf (((symbol-function 'window-screen-lines)
+                     (lambda () 40.0))
+                    ((symbol-function 'window-body-height)
+                     (lambda (&rest _) 40)))
+            (should (= (round (* (1- 20.0) halo-center-fraction))
+                       (halo--center-line (selected-window))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -223,6 +253,61 @@
                        (error "unexpected display-line scan"))))
             (halo--refresh (current-buffer) (selected-window)))
           (should-not scanned))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-refresh-notices-face-remapping-changes ()
+  (let ((buffer (get-buffer-create " *halo-test-refresh-face-remap*"))
+        (halo-center-cursor nil)
+        (halo-virtual-top-margin nil)
+        scanned)
+    (unwind-protect
+        (progn
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 40)
+            (insert (format "line %d\n" index)))
+          (goto-char (point-min))
+          (halo-mode 1)
+          (setq-local face-remapping-alist '((default (:height 1.2))))
+          (cl-letf (((symbol-function 'halo--visible-display-lines)
+                     (lambda (&rest _)
+                       (setq scanned t)
+                       nil)))
+            (halo--refresh (current-buffer) (selected-window)))
+          (should scanned))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-refresh-notices-screen-line-count-changes ()
+  (let ((buffer (get-buffer-create " *halo-test-refresh-screen-lines*"))
+        (halo-center-cursor nil)
+        (halo-virtual-top-margin nil)
+        (screen-lines 40.0)
+        scanned)
+    (unwind-protect
+        (progn
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 40)
+            (insert (format "line %d\n" index)))
+          (goto-char (point-min))
+          (cl-letf (((symbol-function 'window-screen-lines)
+                     (lambda () screen-lines)))
+            (halo-mode 1)
+            (setq screen-lines 20.0)
+            (cl-letf (((symbol-function 'halo--visible-display-lines)
+                       (lambda (&rest _)
+                         (setq scanned t)
+                         nil)))
+              (halo--refresh (current-buffer) (selected-window))))
+          (should scanned))
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (when halo-mode
@@ -723,6 +808,71 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
+(ert-deftest halo-center-window-notices-face-remapping-changes ()
+  (let ((buffer (get-buffer-create " *halo-test-center-face-remap*"))
+        (halo-center-cursor t)
+        (halo-center-cursor-display-fallback nil)
+        (halo-virtual-top-margin nil)
+        (halo-live-update t)
+        recomputed)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 40)
+            (insert (format "line %d\n" index)))
+          (goto-char (point-min))
+          (forward-line 20)
+          (halo-mode 1)
+          (setq-local face-remapping-alist '((default (:height 1.2))))
+          (cl-letf (((symbol-function 'halo--center-cursor-active-p)
+                     (lambda (&rest _)
+                       (setq recomputed t)
+                       nil)))
+            (halo--center-window (selected-window)))
+          (should recomputed))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-center-window-notices-screen-line-count-changes ()
+  (let ((buffer (get-buffer-create " *halo-test-center-screen-line-change*"))
+        (halo-center-cursor t)
+        (halo-center-cursor-display-fallback nil)
+        (halo-virtual-top-margin nil)
+        (halo-live-update t)
+        (screen-lines 40.0)
+        recomputed)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 40)
+            (insert (format "line %d\n" index)))
+          (goto-char (point-min))
+          (forward-line 20)
+          (cl-letf (((symbol-function 'window-screen-lines)
+                     (lambda () screen-lines)))
+            (halo-mode 1)
+            (setq screen-lines 20.0)
+            (cl-letf (((symbol-function 'halo--center-cursor-active-p)
+                       (lambda (&rest _)
+                         (setq recomputed t)
+                         nil)))
+              (halo--center-window (selected-window))))
+          (should recomputed))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
 (ert-deftest halo-image-display-suspends-centering-only ()
   (let ((buffer (get-buffer-create " *halo-test-image-display*"))
         (halo-center-cursor t)
@@ -1065,6 +1215,45 @@
             (let ((this-command 'mouse-wheel-text-scale))
               (halo--post-command))
             (should (= point-start (point)))))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-mouse-wheel-text-scale-forces-recenter-without-moving-point ()
+  (let ((buffer (get-buffer-create " *halo-test-mouse-wheel-text-scale-center*"))
+        (halo-center-cursor t)
+        (halo-virtual-top-margin nil)
+        (halo-live-update t)
+        center-forced
+        refresh-forced)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 80)
+            (insert (format "line %d\n" index)))
+          (goto-char (point-min))
+          (forward-line 30)
+          (halo-mode 1)
+          (let ((point-start (point)))
+            (cl-letf (((symbol-function 'halo--move-point-to-window-center)
+                       (lambda (&rest _)
+                         (error "unexpected point movement")))
+                      ((symbol-function 'halo--center-window)
+                       (lambda (_window &optional force)
+                         (setq center-forced force)))
+                      ((symbol-function 'halo--refresh)
+                       (lambda (_buffer _window &optional force)
+                         (setq refresh-forced force))))
+              (let ((this-command 'mouse-wheel-text-scale))
+                (halo--post-command)))
+            (should (= point-start (point)))
+            (should center-forced)
+            (should refresh-forced)))
       (delete-other-windows)
       (when (buffer-live-p buffer)
         (with-current-buffer buffer

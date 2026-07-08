@@ -214,6 +214,11 @@ When the predicate returns non-nil, `halo-mode' is not enabled in that buffer."
     pixel-scroll-down)
   "Commands that scroll the window through mouse wheel input.")
 
+(defconst halo--mouse-wheel-text-scale-commands
+  '(mouse-wheel-text-scale
+    mouse-wheel-global-text-scale)
+  "Commands that resize text through mouse wheel input.")
+
 (defvar halo-mode)
 
 (defconst halo--virtual-boundary-marker-bitmap-array
@@ -373,9 +378,42 @@ Lines inside `halo-focus-band' return nil and are left untouched."
     (when (and progress (< 0.0 progress))
       (min steps (max 1 (ceiling (* progress steps)))))))
 
+(defun halo--face-remapping-height-scale ()
+  "Return default-face height scale from `face-remapping-alist'."
+  (let ((scale 1.0))
+    (when (boundp 'face-remapping-alist)
+      (dolist (entry face-remapping-alist)
+        (when (eq (car-safe entry) 'default)
+          (dolist (spec (cdr entry))
+            (when (and (listp spec)
+                       (plist-member spec :height))
+              (let ((height (plist-get spec :height)))
+                (when (floatp height)
+                  (setq scale (* scale height)))))))))
+    (max 0.01 scale)))
+
+(defun halo--window-screen-lines (window)
+  "Return display line capacity for WINDOW in default-face screen lines."
+  (with-current-buffer (window-buffer window)
+    (let* ((screen-lines
+            (if (fboundp 'window-screen-lines)
+                (with-selected-window window
+                  (max 1.0 (window-screen-lines)))
+              (max 1 (window-body-height window))))
+           (height-scale (halo--face-remapping-height-scale))
+           (scaled-body-lines (/ (float (max 1 (window-body-height window)))
+                                 height-scale)))
+      (cond
+       ((> height-scale 1.0)
+        (max 1.0 (min screen-lines scaled-body-lines)))
+       ((< height-scale 1.0)
+        (max 1.0 (max screen-lines scaled-body-lines)))
+       (t
+        screen-lines)))))
+
 (defun halo--viewport-line-count (window)
   "Return the viewport line count used for dimming WINDOW."
-  (max 1 (window-body-height window)))
+  (halo--window-screen-lines window))
 
 (defun halo--alpha-for-step (step &optional steps min-alpha falloff)
   "Return foreground alpha for contrast STEP."
@@ -527,7 +565,7 @@ overlays are scanned only when CLEANUP-ORPHANS is non-nil or WINDOW is nil."
 
 (defun halo--center-line (window)
   "Return the target center line index for WINDOW."
-  (round (* (1- (max 1 (window-body-height window)))
+  (round (* (1- (halo--window-screen-lines window))
             (halo--clamp halo-center-fraction 0.0 1.0))))
 
 (defun halo--window-table ()
@@ -578,6 +616,10 @@ overlays are scanned only when CLEANUP-ORPHANS is non-nil or WINDOW is nil."
   "Return non-nil when the current command came from mouse wheel scrolling."
   (memq this-command halo--mouse-wheel-commands))
 
+(defun halo--mouse-wheel-text-scale-command-p ()
+  "Return non-nil when the current command came from mouse wheel text scaling."
+  (memq this-command halo--mouse-wheel-text-scale-commands))
+
 (defun halo--text-clickable-p (position)
   "Return non-nil when text at POSITION looks mouse-clickable."
   (or (get-char-property position 'button)
@@ -592,6 +634,7 @@ overlays are scanned only when CLEANUP-ORPHANS is non-nil or WINDOW is nil."
   "Return non-nil when the last input event clicked clickable text."
   (and (mouse-event-p last-input-event)
        (not (halo--mouse-wheel-command-p))
+       (not (halo--mouse-wheel-text-scale-command-p))
        (let* ((start (event-start last-input-event))
               (window (posn-window start))
               (position (posn-point start)))
@@ -848,14 +891,20 @@ When LIMIT is non-nil, stop counting after that many display lines."
         (or (overlay-get overlay 'halo-virtual-top-margin-lines) 0)
       0)))
 
+(defun halo--face-remapping-state ()
+  "Return face remapping state that can affect display geometry."
+  (when (boundp 'face-remapping-alist)
+    (copy-tree face-remapping-alist)))
+
 (defun halo--center-window-state (window)
   "Return state that affects cursor centering for WINDOW."
   (list window
         (point)
         (window-start window)
-        (window-body-height window)
+        (halo--window-screen-lines window)
         (window-body-width window)
         (buffer-modified-tick)
+        (halo--face-remapping-state)
         (halo--virtual-top-margin-lines window)
         halo-center-cursor
         halo-center-cursor-display-fallback
@@ -865,14 +914,17 @@ When LIMIT is non-nil, stop counting after that many display lines."
         (and halo-center-cursor-display-fallback
              (halo--nearby-display-line-has-image-display-p window))))
 
-(defun halo--center-window (window)
-  "Recenter WINDOW around point when cursor centering is enabled."
+(defun halo--center-window (window &optional force)
+  "Recenter WINDOW around point when cursor centering is enabled.
+When FORCE is non-nil, recompute even when cached state looks unchanged."
   (when (and (window-live-p window)
              (eq (window-buffer window) (current-buffer))
              (not (minibufferp (current-buffer))))
     (if halo-center-cursor
         (let ((state (halo--center-window-state window)))
-          (unless (equal state (halo--center-window-state-for-window window))
+          (when (or force
+                    (not (equal state
+                                (halo--center-window-state-for-window window))))
             (if (halo--center-cursor-active-p window)
                 (progn
                   (halo--update-virtual-top-margin window)
@@ -905,7 +957,7 @@ Each element is a cons cell (START . END).  The scan advances with
 `vertical-motion', so folded text is skipped in display order instead of being
 visited line by line."
   (let ((end (window-end window t))
-        (limit (+ (max 1 (window-body-height window)) 2))
+        (limit (+ (ceiling (halo--viewport-line-count window)) 2))
         (count 0)
         lines)
     (save-excursion
@@ -933,7 +985,7 @@ visited line by line."
     (list window
           (window-start window)
           (window-end window t)
-          (window-body-height window)
+          (halo--viewport-line-count window)
           (window-body-width window)
           (buffer-modified-tick)
           (halo--virtual-top-margin-lines window)
@@ -942,7 +994,8 @@ visited line by line."
           (halo--clamp halo-min-alpha 0.0 1.0)
           halo-falloff
           (halo--default-foreground)
-          (halo--default-background))))
+          (halo--default-background)
+          (halo--face-remapping-state))))
 
 (defun halo--refresh (buffer window &optional force)
   "Refresh halo overlays for BUFFER in WINDOW."
@@ -1058,6 +1111,13 @@ When WINDOW is non-nil, refresh that window instead of the selected window."
       (when (eq (window-buffer (selected-window)) (current-buffer))
         (let ((window (selected-window)))
           (cond
+           ((halo--mouse-wheel-text-scale-command-p)
+            (if halo-live-update
+                (progn
+                  (halo--center-window window t)
+                  (halo--refresh (current-buffer) window t))
+              (halo--center-window window t)
+              (halo--schedule window)))
            ((halo--mouse-wheel-command-p)
             (when (halo--center-cursor-active-p window)
               (halo--move-point-to-window-center window))
