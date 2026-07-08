@@ -434,6 +434,15 @@ Lines inside `halo-focus-band' return nil and are left untouched."
   (min (or (next-single-property-change position 'face nil limit) limit)
        (or (next-single-property-change position 'font-lock-face nil limit) limit)))
 
+(defun halo--next-invisibility-change (position limit)
+  "Return the next invisibility property change after POSITION before LIMIT."
+  (let ((next (or (next-single-char-property-change
+                   position 'invisible nil limit)
+                  limit)))
+    (if (<= next position)
+        (min limit (1+ position))
+      next)))
+
 (defun halo--delete-tracked-overlays (&optional window)
   "Delete live tracked contrast overlays for WINDOW.
 When WINDOW is nil, delete all tracked contrast overlays."
@@ -491,20 +500,28 @@ overlays are scanned only when CLEANUP-ORPHANS is non-nil or WINDOW is nil."
         run-face)
     (halo--ensure-face-cache face-cache-key)
     (while (< position end)
-      (let* ((next (halo--next-face-change position end))
-             (face (halo--text-face-at position))
-             (dim-face (halo--dim-face face step default-foreground
-                                       background steps min-alpha falloff
-                                       face-cache-key)))
-        (cond
-         ((null run-start)
-          (setq run-start position
-                run-face dim-face))
-         ((not (equal dim-face run-face))
-          (halo--make-overlay run-start position run-face window)
-          (setq run-start position
-                run-face dim-face)))
-        (setq position next)))
+      (if (invisible-p position)
+          (progn
+            (when run-start
+              (halo--make-overlay run-start position run-face window)
+              (setq run-start nil
+                    run-face nil))
+            (setq position (halo--next-invisibility-change position end)))
+        (let* ((next (min (halo--next-face-change position end)
+                          (halo--next-invisibility-change position end)))
+               (face (halo--text-face-at position))
+               (dim-face (halo--dim-face face step default-foreground
+                                         background steps min-alpha falloff
+                                         face-cache-key)))
+          (cond
+           ((null run-start)
+            (setq run-start position
+                  run-face dim-face))
+           ((not (equal dim-face run-face))
+            (halo--make-overlay run-start position run-face window)
+            (setq run-start position
+                  run-face dim-face)))
+          (setq position next))))
     (when run-start
       (halo--make-overlay run-start end run-face window))))
 

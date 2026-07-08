@@ -902,6 +902,47 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
+(ert-deftest halo-refresh-does-not-overlay-invisible-folds ()
+  (let ((buffer (get-buffer-create " *halo-test-invisible-fold-overlays*"))
+        (halo-center-cursor nil)
+        (halo-focus-band '(1.0 . 1.0))
+        (halo-virtual-top-margin nil)
+        (inhibit-modification-hooks t))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (insert "visible 1\nfolded 1\nfolded 2\nvisible 2\n")
+          (let* ((fold-start (save-excursion
+                               (goto-char (point-min))
+                               (forward-line 1)
+                               (point)))
+                 (fold-end (save-excursion
+                             (goto-char (point-min))
+                             (forward-line 3)
+                             (point)))
+                 (fold (make-overlay fold-start fold-end buffer)))
+            (overlay-put fold 'invisible t)
+            (goto-char (point-min))
+            (halo-mode 1)
+            (halo-refresh t)
+            (should (halo-test-halo-overlay-at-p (point-min)))
+            (should-not
+             (seq-some
+              (lambda (overlay)
+                (and (overlay-buffer overlay)
+                     (overlay-get overlay 'halo)
+                     (< (overlay-start overlay) fold-end)
+                     (> (overlay-end overlay) fold-start)))
+              halo--overlays))))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
 (ert-deftest halo-after-change-update-centers-process-output-like-buffers ()
   (let ((buffer (get-buffer-create " *halo-test-process-output*"))
         (halo-center-cursor t)
