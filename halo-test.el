@@ -140,7 +140,7 @@
         (progn
           (switch-to-buffer buffer)
           (should (= (round (* (1- (halo--window-screen-lines
-                                     (selected-window)))
+                                    (selected-window)))
                                halo-center-fraction))
                      (halo--center-line (selected-window)))))
       (when (buffer-live-p buffer)
@@ -314,7 +314,7 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
-(ert-deftest halo-overlays-are-window-local ()
+(ert-deftest halo-mode-initializes-window-local-overlays ()
   (let ((buffer (get-buffer-create " *halo-test-window-local*"))
         (halo-steps 2)
         (halo-min-alpha 0.5)
@@ -334,8 +334,14 @@
           (setq second-window (split-window-right))
           (halo-mode 1)
           (should halo--overlays)
-          (dolist (overlay halo--overlays)
-            (should (eq first-window (overlay-get overlay 'window))))
+          (should (seq-some
+                   (lambda (overlay)
+                     (eq first-window (overlay-get overlay 'window)))
+                   halo--overlays))
+          (should (seq-some
+                   (lambda (overlay)
+                     (eq second-window (overlay-get overlay 'window)))
+                   halo--overlays))
           (select-window second-window)
           (with-current-buffer buffer
             (goto-char (point-min))
@@ -390,6 +396,30 @@
         (with-current-buffer buffer
           (when halo-mode
             (halo-mode -1)))
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-refresh-all-walks-windows-on-all-frames ()
+  (let ((buffer (get-buffer-create " *halo-test-refresh-all-frames*"))
+        (window (selected-window))
+        walked-all-frames
+        updated)
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq-local halo-mode t)
+          (cl-letf (((symbol-function 'walk-windows)
+                     (lambda (function minibuf all-frames)
+                       (should (eq minibuf 'no-minibuf))
+                       (setq walked-all-frames all-frames)
+                       (funcall function window)))
+                    ((symbol-function 'window-buffer)
+                     (lambda (_window) buffer))
+                    ((symbol-function 'halo--update-now)
+                     (lambda (target &optional force)
+                       (setq updated (list target force)))))
+            (halo-refresh-all t)
+            (should (eq walked-all-frames t))
+            (should (equal updated (list window t)))))
+      (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (ert-deftest halo-refresh-input-state-is-window-local ()
@@ -454,8 +484,7 @@
           (delete-other-windows)
           (switch-to-buffer buffer)
           (setq-local halo-mode t)
-          (setq halo--timer nil
-                halo--window nil)
+          (setq halo--timers nil)
           (cl-letf (((symbol-function 'run-with-idle-timer)
                      (lambda (&rest _args)
                        (setq created (1+ created))
@@ -464,16 +493,67 @@
                      (lambda (&rest _args)
                        (setq cancelled (1+ cancelled)))))
             (halo--schedule (selected-window))
-            (setq first-timer halo--timer)
+            (setq first-timer
+                  (gethash (selected-window) halo--timers))
             (halo--schedule (selected-window))
             (should (= created 1))
             (should (= cancelled 0))
-            (should (eq first-timer halo--timer)))
-          (setq halo--timer nil
-                halo--window nil
+            (should (eq first-timer
+                        (gethash (selected-window) halo--timers))))
+          (setq halo--timers nil
                 halo-mode nil))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest halo-schedule-keeps-independent-timers-for-each-window ()
+  (let ((buffer (get-buffer-create " *halo-test-schedule-windows*"))
+        (created 0)
+        (cancelled 0)
+        first-window
+        second-window)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (setq first-window (selected-window))
+          (setq second-window (split-window-right))
+          (set-window-buffer second-window buffer)
+          (setq-local halo-mode t)
+          (setq halo--timers nil)
+          (cl-letf (((symbol-function 'run-with-idle-timer)
+                     (lambda (&rest _args)
+                       (setq created (1+ created))
+                       (list 'halo-test-timer created)))
+                    ((symbol-function 'cancel-timer)
+                     (lambda (&rest _args)
+                       (setq cancelled (1+ cancelled)))))
+            (halo--schedule first-window)
+            (halo--schedule second-window)
+            (should (= created 2))
+            (should (= cancelled 0))
+            (should (gethash first-window halo--timers))
+            (should (gethash second-window halo--timers)))
+          (setq halo--timers nil
+                halo-mode nil))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-cancel-timer-preserves-other-window-timers ()
+  (let ((halo--timers (make-hash-table :test #'eq))
+        cancelled)
+    (puthash 'first-window 'first-timer halo--timers)
+    (puthash 'second-window 'second-timer halo--timers)
+    (cl-letf (((symbol-function 'cancel-timer)
+               (lambda (timer)
+                 (push timer cancelled))))
+      (halo--cancel-timer 'first-window)
+      (should-not (gethash 'first-window halo--timers))
+      (should (eq (gethash 'second-window halo--timers) 'second-timer))
+      (should (equal cancelled '(first-timer)))
+      (halo--cancel-timer)
+      (should (= 0 (hash-table-count halo--timers)))
+      (should (memq 'second-timer cancelled)))))
 
 (ert-deftest halo-refresh-dims-from-viewport-when-point-is-not-centered ()
   (let ((buffer (get-buffer-create " *halo-test-noncentered*"))
@@ -646,6 +726,16 @@
     (should (equal (get-text-property 0 'display line)
                    '(left-fringe halo--virtual-boundary-marker
                                  halo-virtual-boundary-marker)))))
+
+(ert-deftest halo-virtual-boundary-lines-add-zero-width-cursor-anchor ()
+  (let* ((halo-virtual-boundary-markers nil)
+         (lines (halo--virtual-boundary-lines 3))
+         (anchor (1- (length lines))))
+    (should (= 3 (seq-count (lambda (char) (= char ?\n)) lines)))
+    (should (eq t (get-text-property anchor 'cursor lines)))
+    (should (equal '(space :width 0)
+                   (get-text-property anchor 'display lines)))
+    (should (equal "" (halo--virtual-boundary-lines 0)))))
 
 (ert-deftest halo-virtual-boundary-markers-are-off-by-default ()
   (let ((halo-virtual-boundary-markers nil))
@@ -1165,6 +1255,40 @@
             (halo-mode -1)))
         (kill-buffer buffer)))))
 
+(ert-deftest halo-after-change-updates-each-window-showing-buffer ()
+  (let ((buffer (get-buffer-create " *halo-test-after-change-windows*"))
+        (halo-center-cursor nil)
+        (halo-live-update t)
+        first-window
+        second-window
+        updated)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (erase-buffer)
+          (dotimes (index 40)
+            (insert (format "line %d\n" index)))
+          (goto-char (point-min))
+          (setq first-window (selected-window))
+          (setq second-window (split-window-right))
+          (set-window-buffer second-window buffer)
+          (halo-mode 1)
+          (setq halo--pending-change-range nil)
+          (cl-letf (((symbol-function 'halo--update-now)
+                     (lambda (window &optional force)
+                       (push (cons window force) updated))))
+            (halo--after-change-update buffer))
+          (should (= 2 (length updated)))
+          (should (equal t (cdr (assq first-window updated))))
+          (should (equal t (cdr (assq second-window updated)))))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when halo-mode
+            (halo-mode -1)))
+        (kill-buffer buffer)))))
+
 (ert-deftest halo-mouse-wheel-scroll-keeps-point-centered ()
   (let ((buffer (get-buffer-create " *halo-test-mouse-wheel*"))
         (halo-center-cursor t)
@@ -1371,6 +1495,27 @@
           (should-not halo-mode))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest halo-global-enable-skips-internal-buffers ()
+  (let ((buffer (get-buffer-create " *halo-test-global-internal*"))
+        (halo-global-excluded-modes nil)
+        (halo-global-exclude-predicate nil))
+    (unwind-protect
+        (with-current-buffer buffer
+          (fundamental-mode)
+          (halo--global-enable)
+          (should-not halo-mode))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest halo-global-exclusions-cover-nonediting-modes ()
+  (dolist (mode '(minibuffer-mode
+                  special-mode
+                  comint-mode
+                  term-mode
+                  vterm-mode
+                  eshell-mode))
+    (should (memq mode halo-global-excluded-modes))))
 
 (ert-deftest halo-global-enable-respects-exclude-predicate ()
   (let ((buffer (get-buffer-create " *halo-test-global-predicate*"))

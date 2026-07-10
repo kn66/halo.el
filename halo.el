@@ -2,6 +2,7 @@
 ;; Copyright (C) 2026 Nobuyuki Kamimoto
 
 ;; Author: kn66
+;; URL: https://github.com/kn66/halo.el
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: convenience, faces
@@ -153,9 +154,16 @@ after `point-max', similar to vi-style empty-line tildes."
   :group 'halo)
 
 (defcustom halo-global-excluded-modes
-  '(minibuffer-mode)
+  '(minibuffer-mode
+    special-mode
+    comint-mode
+    term-mode
+    vterm-mode
+    eshell-mode)
   "Major modes where `halo-global-mode' should not enable itself.
-Derived modes are also excluded."
+Derived modes are also excluded.  The default avoids read-only special buffers
+and interactive process or terminal buffers, where automatic recentering can
+interfere with the mode's own navigation."
   :type '(repeat symbol)
   :group 'halo)
 
@@ -169,8 +177,8 @@ When the predicate returns non-nil, `halo-mode' is not enabled in that buffer."
 (defvar-local halo--overlays nil
   "Overlays currently owned by halo in this buffer.")
 
-(defvar-local halo--timer nil
-  "Idle timer used to coalesce halo refreshes.")
+(defvar-local halo--timers nil
+  "Weak hash table of pending refresh timers keyed by window.")
 
 (defvar-local halo--change-timer nil
   "Timer used to recenter after non-command buffer changes.")
@@ -180,9 +188,6 @@ When the predicate returns non-nil, `halo-mode' is not enabled in that buffer."
 
 (defvar-local halo--in-command nil
   "Non-nil while halo is handling an interactive command.")
-
-(defvar-local halo--window nil
-  "Window most recently used to compute overlays for this buffer.")
 
 (defvar-local halo--face-cache-key nil
   "Key describing the currently cached dimming faces.")
@@ -572,6 +577,11 @@ overlays are scanned only when CLEANUP-ORPHANS is non-nil or WINDOW is nil."
   "Return a weak hash table suitable for window keyed state."
   (make-hash-table :test #'eq :weakness 'key))
 
+(defun halo--timer-table ()
+  "Return the per-window pending refresh timer table for this buffer."
+  (or halo--timers
+      (setq halo--timers (halo--window-table))))
+
 (defun halo--refresh-input-states ()
   "Return the per-window pre-scan refresh state table for this buffer."
   (or halo--refresh-input-states
@@ -790,10 +800,19 @@ non-nil, is preserved."
 
 (defun halo--virtual-boundary-lines (line-count)
   "Return LINE-COUNT display-only virtual boundary marker lines."
-  (mapconcat #'identity
-             (make-list (max 0 line-count)
-                        (halo--virtual-boundary-line))
-             ""))
+  (let* ((count (max 0 line-count))
+         (lines (mapconcat #'identity
+                           (make-list count (halo--virtual-boundary-line))
+                           "")))
+    (if (zerop count)
+        lines
+      ;; Give redisplay a real glyph on which to place the cursor.  In
+      ;; particular, this keeps `posn-at-point' from describing the whole
+      ;; multi-line overlay string as the object at point on MS-Windows.
+      (concat lines
+              (propertize " "
+                          'display '(space :width 0)
+                          'cursor t)))))
 
 (defun halo--enable-empty-line-indicators ()
   "Use the halo fringe marker for real empty lines after `point-max'."
@@ -1003,9 +1022,7 @@ visited line by line."
              (window-live-p window)
              (eq (window-buffer window) buffer))
     (with-current-buffer buffer
-      (setq halo--timer nil)
       (when halo-mode
-        (setq halo--window window)
         (let ((input-state (halo--refresh-input-state window)))
           (unless (and (not force)
                        (equal input-state
@@ -1020,8 +1037,8 @@ visited line by line."
                    (default-foreground (nth 11 input-state))
                    (default-background (nth 12 input-state))
                    (face-cache-key (halo--face-cache-key default-background
-                                                          steps min-alpha
-                                                          falloff))
+                                                         steps min-alpha
+                                                         falloff))
                    (index 0))
               (halo--set-refresh-input-state-for-window window input-state)
               (if lines
@@ -1044,21 +1061,27 @@ visited line by line."
                                               face-cache-key))
                   (setq index (1+ index)))))))))))
 
+(defun halo--run-scheduled-refresh (buffer window)
+  "Run a scheduled refresh for BUFFER in WINDOW and clear its timer state."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when halo--timers
+        (remhash window halo--timers))))
+  (halo--refresh buffer window))
+
 (defun halo--schedule (&optional window)
   "Schedule a delayed halo refresh for the current buffer.
 When WINDOW is non-nil, refresh that window instead of the selected window."
   (when halo-mode
-    (let ((target-window (or window (selected-window))))
-      (unless (and halo--timer
-                   (eq target-window halo--window))
-        (when halo--timer
-          (cancel-timer halo--timer))
-        (setq halo--window target-window)
-        (setq halo--timer
-              (run-with-idle-timer halo-idle-delay nil
-                                   #'halo--refresh
-                                   (current-buffer)
-                                   target-window))))))
+    (let* ((target-window (or window (selected-window)))
+           (timers (halo--timer-table)))
+      (unless (gethash target-window timers)
+        (puthash target-window
+                 (run-with-idle-timer halo-idle-delay nil
+                                      #'halo--run-scheduled-refresh
+                                      (current-buffer)
+                                      target-window)
+                 timers)))))
 
 (defun halo--record-pending-change (start end)
   "Merge changed START and END into `halo--pending-change-range'."
@@ -1093,9 +1116,8 @@ When WINDOW is non-nil, refresh that window instead of the selected window."
       (let ((change-range halo--pending-change-range))
         (setq halo--change-timer nil
               halo--pending-change-range nil)
-        (when (and halo-mode
-                   (eq (window-buffer (selected-window)) buffer))
-          (let ((window (selected-window)))
+        (when halo-mode
+          (dolist (window (get-buffer-window-list buffer nil t))
             (when (halo--change-affects-window-p window change-range)
               (if halo-live-update
                   (halo--update-now window t)
@@ -1146,15 +1168,24 @@ When WINDOW is non-nil, refresh that window instead of the selected window."
 
 (defun halo--update-now (window &optional force)
   "Update centering and contrast overlays immediately for WINDOW."
-  (halo--cancel-timer)
+  (halo--cancel-timer window)
   (halo--center-window window)
   (halo--refresh (current-buffer) window force))
 
-(defun halo--cancel-timer ()
-  "Cancel the pending halo refresh timer."
-  (when halo--timer
-    (cancel-timer halo--timer)
-    (setq halo--timer nil)))
+(defun halo--cancel-timer (&optional window)
+  "Cancel pending halo refresh timers.
+When WINDOW is non-nil, cancel only the timer for that window.  Otherwise,
+cancel every pending refresh timer for the current buffer."
+  (when halo--timers
+    (if window
+        (let ((timer (gethash window halo--timers)))
+          (when timer
+            (cancel-timer timer)
+            (remhash window halo--timers)))
+      (maphash (lambda (_window timer)
+                 (cancel-timer timer))
+               halo--timers)
+      (clrhash halo--timers))))
 
 (defun halo--cancel-change-timer ()
   "Cancel the pending post-change centering timer."
@@ -1165,6 +1196,7 @@ When WINDOW is non-nil, refresh that window instead of the selected window."
 (defun halo--global-enable ()
   "Enable `halo-mode' in the current buffer when appropriate."
   (unless (or (minibufferp)
+              (string-prefix-p " " (buffer-name))
               (apply #'derived-mode-p halo-global-excluded-modes)
               (and halo-global-exclude-predicate
                    (funcall halo-global-exclude-predicate)))
@@ -1185,17 +1217,20 @@ unchanged."
 With FORCE non-nil, rebuild overlays even when cached refresh states appear
 unchanged."
   (interactive "P")
-  (dolist (window (window-list nil 'no-minibuf))
-    (when (window-live-p window)
-      (with-current-buffer (window-buffer window)
-        (when halo-mode
-          (halo--update-now window force))))))
+  (walk-windows
+   (lambda (window)
+     (when (window-live-p window)
+       (with-current-buffer (window-buffer window)
+         (when halo-mode
+           (halo--update-now window force)))))
+   'no-minibuf t))
 
 ;;;###autoload
 (define-minor-mode halo-mode
   "Dim visible lines progressively as they approach window edges.
-The mode only processes the selected window's visible range.  It uses overlays,
-so disabling the mode removes all visual changes made by this package."
+The mode processes the visible range of every live window showing this buffer.
+It uses overlays, so disabling the mode removes all visual changes made by this
+package."
   :init-value nil
   :lighter " Halo"
   :group 'halo
@@ -1206,12 +1241,12 @@ so disabling the mode removes all visual changes made by this package."
         (add-hook 'after-change-functions #'halo--schedule-after-change nil t)
         (add-hook 'window-scroll-functions #'halo--window-scroll nil t)
         (halo--enable-empty-line-indicators)
-        (halo--delete-overlays nil nil (selected-window) t)
-        (if halo-live-update
-            (halo--update-now (selected-window) t)
-          (progn
-            (halo--center-window (selected-window))
-            (halo--schedule))))
+        (halo--delete-overlays)
+        (dolist (window (get-buffer-window-list (current-buffer) nil t))
+          (if halo-live-update
+              (halo--update-now window t)
+            (halo--center-window window)
+            (halo--schedule window))))
     (remove-hook 'pre-command-hook #'halo--pre-command t)
     (remove-hook 'post-command-hook #'halo--post-command t)
     (remove-hook 'after-change-functions #'halo--schedule-after-change t)
@@ -1221,7 +1256,7 @@ so disabling the mode removes all visual changes made by this package."
     (halo--delete-virtual-top-margin)
     (halo--restore-empty-line-indicators)
     (halo--delete-overlays)
-    (setq halo--window nil
+    (setq halo--timers nil
           halo--in-command nil
           halo--pending-change-range nil
           halo--refresh-input-states nil

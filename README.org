@@ -84,7 +84,8 @@ With explicit settings:
     (halo-center-cursor t)
     (halo-center-fraction 0.5)
     (halo-virtual-top-margin t)
-    (halo-global-excluded-modes '(minibuffer-mode))
+    (halo-global-excluded-modes
+     '(minibuffer-mode special-mode comint-mode term-mode vterm-mode eshell-mode))
     (halo-global-exclude-predicate nil))
 #+end_src
 
@@ -107,7 +108,11 @@ With explicit settings:
 - =halo-virtual-top-margin=: when non-nil, add display-only space before the
   first buffer line so centering also works at the beginning of the buffer.
 - =halo-global-excluded-modes=: major modes where =halo-global-mode= should not
-  enable =halo-mode=.  Derived modes are also excluded.
+  enable =halo-mode=.  Derived modes are also excluded.  By default this covers
+  minibuffers, read-only special buffers, and interactive process or terminal
+  modes where automatic recentering can interfere with navigation.  Internal
+  buffers whose names start with a space, including child-frame popup buffers,
+  are always skipped.
 - =halo-global-exclude-predicate=: optional predicate called before
   =halo-global-mode= enables =halo-mode= in a buffer.
 
